@@ -618,6 +618,101 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   KEY `ix_notifications_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `evaluation_cases` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `case_id` VARCHAR(80) NOT NULL,
+  `title` VARCHAR(160) NOT NULL,
+  `evaluation_type` VARCHAR(40) NOT NULL,
+  `agent_type` VARCHAR(40) NULL,
+  `message` TEXT NOT NULL,
+  `requested_agent` VARCHAR(40) NULL,
+  `expected_agent` VARCHAR(40) NULL,
+  `expected_doc_ids_json` TEXT NOT NULL,
+  `expected_safety_flags_json` TEXT NOT NULL,
+  `expected_structured_keys_json` TEXT NOT NULL,
+  `expected_review_required` BOOL NOT NULL DEFAULT 0,
+  `expected_refusal` BOOL NOT NULL DEFAULT 0,
+  `difficulty` VARCHAR(20) NOT NULL DEFAULT 'medium',
+  `active` BOOL NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_evaluation_cases_case_id` (`case_id`),
+  KEY `ix_evaluation_cases_id` (`id`),
+  KEY `ix_evaluation_cases_case_id` (`case_id`),
+  KEY `ix_evaluation_cases_title` (`title`),
+  KEY `ix_evaluation_cases_evaluation_type` (`evaluation_type`),
+  KEY `ix_evaluation_cases_agent_type` (`agent_type`),
+  KEY `ix_evaluation_cases_expected_review_required` (`expected_review_required`),
+  KEY `ix_evaluation_cases_expected_refusal` (`expected_refusal`),
+  KEY `ix_evaluation_cases_difficulty` (`difficulty`),
+  KEY `ix_evaluation_cases_active` (`active`),
+  KEY `ix_evaluation_cases_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `evaluation_runs` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `run_id` VARCHAR(80) NOT NULL,
+  `name` VARCHAR(160) NOT NULL,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'completed',
+  `triggered_by` VARCHAR(80) NULL,
+  `total_cases` INT NOT NULL DEFAULT 0,
+  `passed_cases` INT NOT NULL DEFAULT 0,
+  `failed_cases` INT NOT NULL DEFAULT 0,
+  `pass_rate` DOUBLE NOT NULL DEFAULT 0,
+  `rag_hit_rate` DOUBLE NOT NULL DEFAULT 0,
+  `safety_pass_rate` DOUBLE NOT NULL DEFAULT 0,
+  `agent_quality_rate` DOUBLE NOT NULL DEFAULT 0,
+  `avg_latency_ms` INT NOT NULL DEFAULT 0,
+  `estimated_cost` DOUBLE NOT NULL DEFAULT 0,
+  `summary_json` TEXT NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` DATETIME NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_evaluation_runs_run_id` (`run_id`),
+  KEY `ix_evaluation_runs_id` (`id`),
+  KEY `ix_evaluation_runs_run_id` (`run_id`),
+  KEY `ix_evaluation_runs_name` (`name`),
+  KEY `ix_evaluation_runs_status` (`status`),
+  KEY `ix_evaluation_runs_triggered_by` (`triggered_by`),
+  KEY `ix_evaluation_runs_pass_rate` (`pass_rate`),
+  KEY `ix_evaluation_runs_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `evaluation_results` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `run_db_id` INT NOT NULL,
+  `case_db_id` INT NULL,
+  `case_id` VARCHAR(80) NOT NULL,
+  `title` VARCHAR(160) NOT NULL,
+  `evaluation_type` VARCHAR(40) NOT NULL,
+  `agent_type` VARCHAR(40) NULL,
+  `passed` BOOL NOT NULL DEFAULT 0,
+  `score` DOUBLE NOT NULL DEFAULT 0,
+  `metrics_json` TEXT NOT NULL,
+  `failures_json` TEXT NOT NULL,
+  `response_json` TEXT NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `ix_evaluation_results_id` (`id`),
+  KEY `ix_evaluation_results_run_db_id` (`run_db_id`),
+  KEY `ix_evaluation_results_case_db_id` (`case_db_id`),
+  KEY `ix_evaluation_results_case_id` (`case_id`),
+  KEY `ix_evaluation_results_evaluation_type` (`evaluation_type`),
+  KEY `ix_evaluation_results_agent_type` (`agent_type`),
+  KEY `ix_evaluation_results_passed` (`passed`),
+  KEY `ix_evaluation_results_score` (`score`),
+  KEY `ix_evaluation_results_created_at` (`created_at`),
+  CONSTRAINT `fk_evaluation_results_run_db_id_evaluation_runs`
+    FOREIGN KEY (`run_db_id`) REFERENCES `evaluation_runs` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_evaluation_results_case_db_id_evaluation_cases`
+    FOREIGN KEY (`case_db_id`) REFERENCES `evaluation_cases` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `workflow_configs` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `config_id` VARCHAR(80) NOT NULL,

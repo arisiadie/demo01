@@ -289,10 +289,19 @@ class KnowledgeStore:
         ]
         
         if self._chroma is None:
-            return {"backend": self.backend_name, "error": self._chroma_error, "case_count": len(cases), "hit_rate": 0.0, "mrr": 0.0}
-        
-        result = self._chroma.evaluate(cases, top_k=5)
-        result["backend"] = self.backend_name
+            result = self._evaluate_recall_with_retrieve(cases, top_k=5)
+            result["backend"] = self.backend_name
+            result["error"] = self._chroma_error
+        else:
+            try:
+                result = self._chroma.evaluate(cases, top_k=5)
+                result["backend"] = self.backend_name
+            except Exception as exc:
+                self._chroma_error = str(exc)
+                result = self._evaluate_recall_with_retrieve(cases, top_k=5)
+                result["backend"] = self.backend_name
+                result["evaluation_backend"] = "local-hybrid-fallback"
+                result["error"] = self._chroma_error
         
         failures = []
         failure_analysis = {
@@ -363,6 +372,36 @@ class KnowledgeStore:
         }
         
         return result
+
+    def _evaluate_recall_with_retrieve(self, cases: list[dict[str, object]], top_k: int = 5) -> dict[str, object]:
+        if not cases:
+            return {"case_count": 0, "hit_rate": 0.0, "mrr": 0.0, "cases": []}
+        evaluated = []
+        hits = 0
+        reciprocal_sum = 0.0
+        for case in cases:
+            expected = set(case.get("expected_doc_ids", []))
+            retrieved = self.retrieve(str(case["query"]), categories=case.get("categories"), top_k=top_k)  # type: ignore[arg-type]
+            retrieved_ids = [hit.document.id for hit in retrieved]
+            rank = next((idx + 1 for idx, doc_id in enumerate(retrieved_ids) if doc_id in expected), None)
+            if rank:
+                hits += 1
+                reciprocal_sum += 1 / rank
+            evaluated.append(
+                {
+                    "query": case["query"],
+                    "expected_doc_ids": sorted(expected),
+                    "retrieved_doc_ids": retrieved_ids,
+                    "hit": rank is not None,
+                    "rank": rank,
+                }
+            )
+        return {
+            "case_count": len(cases),
+            "hit_rate": round(hits / len(cases), 3),
+            "mrr": round(reciprocal_sum / len(cases), 3),
+            "cases": evaluated,
+        }
 
     def _analyze_failure(self, case: dict, hits: list[RetrievalHit], expected_ids: list[str]) -> dict[str, str]:
         query = case["query"]

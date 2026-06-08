@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import BaseMessage
 
 from app.agents.base_agent import AgentFactory, AgentOutput, BaseAgent
+from app.agents.router import AgentRouter
 from app.rag.store import KnowledgeStore
 from app.services.llm import LLMClient
 
@@ -125,6 +126,7 @@ class MultiAgentWorkflow:
         self.llm = llm
         self.agents: Dict[str, BaseAgent] = {}
         self.workflow_graph = WorkflowGraph()
+        self.router = AgentRouter()
         self._initialize_agents()
         if db is not None:
             self._load_graph_from_db(db)
@@ -173,6 +175,7 @@ class MultiAgentWorkflow:
         self.workflow_graph.add_edge("router", "health", condition="健康相关", label="健康管理")
         
         self.workflow_graph.add_edge("triage", "treatment", condition="需要方案", label="转诊治疗方案")
+        self.workflow_graph.add_edge("triage", "medication", condition="涉及用药", label="用药审查")
         self.workflow_graph.add_edge("triage", "review", condition="紧急情况", label="医生复核")
         self.workflow_graph.add_edge("triage", "end", condition="常规咨询", label="直接结束")
         
@@ -191,19 +194,7 @@ class MultiAgentWorkflow:
         self.workflow_graph.add_edge("review", "end", label="结束")
     
     def route(self, message: str) -> str:
-        routing_rules = [
-            ("medication", ["用药", "药物", "处方", "剂量", "过敏", "阿莫西林", "甲硝唑"]),
-            ("imaging", ["影像", "报告", "X光", "全景片", "CBCT", "根尖片", "阻生"]),
-            ("treatment", ["治疗", "方案", "根管", "种植", "正畸", "拔牙", "修复"]),
-            ("triage", ["痛", "肿", "出血", "溃疡", "症状", "挂号", "看什么科"]),
-        ]
-        
-        message_lower = message.lower()
-        for agent_id, keywords in routing_rules:
-            if any(keyword in message_lower for keyword in keywords):
-                return agent_id
-        
-        return "health"
+        return self.router.plan(message).primary_agent
     
     def execute_agent(self, agent_id: str, message: str, context: Dict[str, Any]) -> AgentOutput:
         if agent_id not in self.agents:
@@ -221,9 +212,18 @@ class MultiAgentWorkflow:
         ]
         
         requested_agent = context.get("requested_agent")
-        current_agent_id = requested_agent if requested_agent in self.agents else self.route(initial_message)
+        agent_plan = context.get("agent_plan") or self.router.plan(initial_message, requested_agent=requested_agent).as_dict()
+        planned_agents = _planned_agents(agent_plan)
+        current_agent_id = requested_agent if requested_agent in self.agents else str(agent_plan.get("primary_agent") or self.route(initial_message))
         state.current_agent = current_agent_id
         trace.append(f"意图路由：{current_agent_id}")
+        trace.append(
+            "Router 计划："
+            f"主智能体={agent_plan.get('primary_agent', current_agent_id)}，"
+            f"次级智能体={','.join(agent_plan.get('secondary_agents') or []) or '无'}"
+        )
+        if agent_plan.get("risk_signals"):
+            trace.append(f"Router 风险信号：{','.join(agent_plan.get('risk_signals') or [])}")
         
         visited_agents: List[str] = []
         
@@ -244,11 +244,13 @@ class MultiAgentWorkflow:
                     "content": output.content,
                     "confidence": output.confidence,
                     "requires_review": output.requires_review,
+                    "risk_level": output.agent_contract.get("risk_level", "medium" if output.requires_review else "low"),
                     "references": output.references,
                     "sources": output.references,
                     "llm_meta": output.llm_meta,
                     "next_actions": output.next_actions,
                     "trace": output.trace,
+                    "agent_contract": output.agent_contract,
                 })
                 trace.extend(output.trace)
                 
@@ -256,7 +258,7 @@ class MultiAgentWorkflow:
                     state.reviewed = True
                     trace.append(f"{current_agent_id}：标记需要医生复核")
                 
-                next_action = self._determine_next_action(current_agent_id, output, set(visited_agents))
+                next_action = self._determine_next_action(current_agent_id, output, set(visited_agents), planned_agents)
                 if next_action:
                     trace.append(f"{current_agent_id} -> {next_action}：按 workflow graph/交接动作进入下一智能体")
                     initial_message = f"基于前序结果继续处理：{output.content}"
@@ -280,11 +282,18 @@ class MultiAgentWorkflow:
             "visited_agents": visited_agents,
             "sources": _merge_sources(results),
             "trace": trace,
+            "agent_plan": agent_plan,
         }
     
-    def _determine_next_action(self, current_agent_id: str, output: AgentOutput, visited: set) -> Optional[str]:
+    def _determine_next_action(
+        self,
+        current_agent_id: str,
+        output: AgentOutput,
+        visited: set,
+        planned_agents: List[str] | None = None,
+    ) -> Optional[str]:
         graph_edges = [edge for edge in self.workflow_graph.edges if edge.source == current_agent_id]
-        graph_next = self._next_agent_from_graph(current_agent_id, output, visited, graph_edges)
+        graph_next = self._next_agent_from_graph(current_agent_id, output, visited, graph_edges, planned_agents or [])
         if graph_next:
             return graph_next
         if graph_edges:
@@ -302,6 +311,7 @@ class MultiAgentWorkflow:
         output: AgentOutput,
         visited: set,
         edges: List[WorkflowEdge],
+        planned_agents: List[str],
     ) -> Optional[str]:
         if not edges:
             return None
@@ -310,8 +320,10 @@ class MultiAgentWorkflow:
             for action in output.next_actions
             if action.get("action") == "handoff" and action.get("target_agent")
         ]
+        handoff_targets.extend(agent_id for agent_id in planned_agents if agent_id != current_agent_id)
         if output.requires_review:
             handoff_targets.append("review")
+        handoff_targets = _dedupe_agents(handoff_targets)
         if not handoff_targets:
             return None
         for edge in edges:
@@ -391,6 +403,7 @@ class MultiAgentWorkflow:
         for agent_id, agent in self.agents.items():
             self.workflow_graph.add_edge("router", agent_id, label=f"路由到{agent.config.name}")
         self.workflow_graph.add_edge("triage", "treatment", condition="需要方案", label="转诊治疗方案")
+        self.workflow_graph.add_edge("triage", "medication", condition="涉及用药", label="用药审查")
         self.workflow_graph.add_edge("triage", "review", condition="紧急情况", label="医生复核")
         self.workflow_graph.add_edge("triage", "end", condition="常规咨询", label="直接结束")
         self.workflow_graph.add_edge("treatment", "medication", condition="涉及用药", label="用药审查")
@@ -415,3 +428,20 @@ def _merge_sources(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if source_id not in merged or float(source.get("score") or 0) > float(merged[source_id].get("score") or 0):
                 merged[source_id] = source
     return sorted(merged.values(), key=lambda item: float(item.get("score") or 0), reverse=True)
+
+
+def _planned_agents(agent_plan: dict[str, Any]) -> List[str]:
+    agents = [str(agent_plan.get("primary_agent") or "")]
+    agents.extend(str(agent_id) for agent_id in agent_plan.get("secondary_agents") or [])
+    return _dedupe_agents(agents)
+
+
+def _dedupe_agents(agent_ids: List[str]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for agent_id in agent_ids:
+        if not agent_id or agent_id in {"start", "router", "review", "end"} or agent_id in seen:
+            continue
+        seen.add(agent_id)
+        result.append(agent_id)
+    return result

@@ -9,10 +9,14 @@ from app.api import routes
 from app.core.config import settings
 from app.core.database import Base
 from app.models.entities import (
+    AgentRun,
     AuditLog,
     Consultation,
     DataAccessRequest,
     DoctorReview,
+    EvaluationCase,
+    EvaluationResult,
+    EvaluationRun,
     FollowUpReminder,
     KnowledgeDocument,
     KnowledgeVersion,
@@ -25,7 +29,7 @@ from app.models.entities import (
     User,
 )
 from app.rag.store import KnowledgeStore
-from app.schemas.dto import PatientProfileInput
+from app.schemas.dto import PatientProfileInput, ReviewUpdate
 from app.services.auth import CurrentUser
 from app.services.llm import LLMClient
 
@@ -402,6 +406,109 @@ def test_persist_consultation_records_main_and_workflow_llm_calls():
     assert any(preview.startswith("[workflow_agent:treatment]") for preview in previews)
 
 
+def test_phase6_persisted_traceability_links_archive_rag_llm_workflow_and_review():
+    settings.deepseek_enabled = False
+    db = _sqlite_session()
+    user_row = User(external_id="patient-demo", role="patient", display_name="患者 Demo")
+    db.add(user_row)
+    db.commit()
+    db.refresh(user_row)
+
+    message = "牙痛三天，脸肿了，我能不能吃头孢？"
+    orchestrator = OralAgentOrchestrator()
+    response = orchestrator.run(AgentContext(message=message))
+    consultation = routes._persist_consultation(
+        db,
+        CurrentUser(id=user_row.id, external_id="patient-demo", role="patient", display_name="患者 Demo"),
+        message,
+        response,
+    )
+
+    result_data = routes._json_loads(consultation.result_json, {})
+    structured = result_data["structured_data"]
+    archive = structured["archive_summary"]
+    traceability = structured["traceability"]
+    agent_run = db.query(AgentRun).filter(AgentRun.consultation_id == consultation.id).first()
+    logs = db.query(LLMCallLog).filter(LLMCallLog.consultation_id == consultation.id).all()
+    hits = db.query(RetrievalHit).filter(RetrievalHit.consultation_id == consultation.id).all()
+    review = db.query(DoctorReview).filter(DoctorReview.consultation_id == consultation.id).first()
+
+    assert archive["consultation_id"] == consultation.id
+    assert archive["doctor_review_id"] == review.id
+    assert archive["workflow_agent_count"] >= 2
+    assert traceability["review"]["review_id"] == review.id
+    assert traceability["llm"]["call_count"] == len(logs)
+    assert traceability["rag"]["source_count"] == len(hits)
+    assert traceability["persistence"]["doctor_review_table"] == "doctor_reviews"
+    assert any(item["stage"] == "workflow_agent" for item in traceability["execution_timeline"])
+    assert any("历史归档" in item for item in routes._json_loads(agent_run.trace_json, []))
+
+    detail = routes.consultation_detail(
+        consultation_id=consultation.id,
+        db=db,
+        user=CurrentUser(id=user_row.id, external_id="patient-demo", role="patient", display_name="患者 Demo"),
+    )
+    admin_rows = routes.admin_consultation_trace(
+        db=db,
+        user=CurrentUser(id=99, external_id="admin-demo", role="admin", display_name="管理员"),
+    )
+
+    assert detail["traceability"]["rag"]["persisted_hit_count"] == len(hits)
+    assert detail["archive_summary"]["llm_call_count"] == len(logs)
+    assert admin_rows[0]["traceability"]["llm"]["persisted_call_count"] == len(logs)
+    assert admin_rows[0]["agent_run"]["agent_type"] == response.agent_type
+
+
+def test_phase6_doctor_review_update_syncs_back_to_archived_traceability():
+    settings.deepseek_enabled = False
+    db = _sqlite_session()
+    user_row = User(external_id="patient-demo", role="patient", display_name="患者 Demo")
+    db.add(user_row)
+    db.commit()
+    db.refresh(user_row)
+
+    message = "牙痛肿胀，想问阿莫西林吃几片。我青霉素过敏，体重60kg，肾功能不好。"
+    orchestrator = OralAgentOrchestrator()
+    response = orchestrator.run(
+        AgentContext(
+            message=message,
+            requested_agent="medication",
+            patient_profile=PatientProfileInput(age=70, allergies="青霉素过敏", conditions="肾功能不好"),
+        )
+    )
+    consultation = routes._persist_consultation(
+        db,
+        CurrentUser(id=user_row.id, external_id="patient-demo", role="patient", display_name="患者 Demo"),
+        message,
+        response,
+    )
+    review = db.query(DoctorReview).filter(DoctorReview.consultation_id == consultation.id).first()
+
+    routes.update_review(
+        review.id,
+        ReviewUpdate(
+            status="approved",
+            note="医生已复核：禁止自行用药，需线下处理病因。",
+            risk_assessment="青霉素过敏和肾功能异常，维持高风险。",
+            treatment_decision="offline_visit",
+            signature="doctor-demo",
+            signature_title="口腔医生",
+        ),
+        db=db,
+        user=CurrentUser(id=2, external_id="doctor-demo", role="doctor", display_name="医生 Demo"),
+    )
+    db.refresh(consultation)
+    result_data = routes._json_loads(consultation.result_json, {})
+    structured = result_data["structured_data"]
+
+    assert consultation.status == "review_approved"
+    assert structured["review_context"]["status"] == "approved"
+    assert structured["review_context"]["reviewed_by"] == "doctor-demo"
+    assert structured["archive_summary"]["review_status"] == "approved"
+    assert structured["traceability"]["review"]["status"] == "approved"
+    assert any(item["label"] == "医生复核状态更新" for item in structured["traceability"]["execution_timeline"])
+
+
 def test_consultation_detail_payload_contains_archive_trace_sources_and_review():
     db = _sqlite_session()
     user = User(external_id="patient-demo", role="patient", display_name="患者 Demo")
@@ -484,6 +591,100 @@ def test_admin_alerts_include_overdue_review_and_pending_privacy_request():
     assert "high_risk_consultation" in alert_types
     assert "privacy_request_pending" in alert_types
     assert payload["counts"]["total"] >= 3
+
+
+def test_phase7_default_evaluation_cases_are_seeded_and_payload_ready():
+    db = _sqlite_session()
+
+    routes._ensure_default_evaluation_cases(db)
+    rows = db.query(EvaluationCase).all()
+    payload = routes.admin_evaluation_cases(
+        db=db,
+        user=CurrentUser(id=1, external_id="admin-demo", role="admin", display_name="管理员"),
+    )
+
+    case_ids = {row.case_id for row in rows}
+    assert len(rows) == 10
+    assert "demo-triage-toothache" in case_ids
+    assert "safety-prescription-boundary" in case_ids
+    assert "agent-composite-workflow" in case_ids
+    assert {item["evaluation_type"] for item in payload} >= {"demo", "rag", "safety", "agent_quality"}
+    assert all(item["expected_structured_keys"] is not None for item in payload)
+
+
+def test_phase7_evaluation_run_persists_results_summary_and_audit_log():
+    settings.deepseek_enabled = False
+    db = _sqlite_session()
+    admin = User(external_id="admin-demo", role="admin", display_name="管理员 Demo")
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
+    current = CurrentUser(id=admin.id, external_id="admin-demo", role="admin", display_name="管理员 Demo")
+
+    payload = routes.create_evaluation_run(
+        {"name": "pytest 验收评测", "case_types": ["rag", "safety"]},
+        db=db,
+        user=current,
+    )
+
+    assert payload["name"] == "pytest 验收评测"
+    assert payload["status"] == "completed"
+    assert payload["total_cases"] == 4
+    assert payload["passed_cases"] == 4
+    assert payload["failed_cases"] == 0
+    assert payload["summary"]["acceptance_conclusion"] == "通过"
+    assert payload["summary"]["by_type"]["rag"]["pass_rate"] == 1.0
+    assert payload["summary"]["by_type"]["safety"]["pass_rate"] == 1.0
+    assert len(payload["results"]) == 4
+    assert db.query(EvaluationRun).count() == 1
+    assert db.query(EvaluationResult).count() == 4
+    assert db.query(AuditLog).filter(AuditLog.action == "evaluation.run").count() == 1
+    assert any(
+        item["case_id"] == "safety-prompt-injection"
+        and item["response"]["refusal"] is True
+        and "prompt_injection_attempt" in item["metrics"]["safety_flags"]
+        for item in payload["results"]
+    )
+
+
+def test_phase7_evaluation_report_exposes_readiness_latest_run_and_rag_metrics():
+    settings.deepseek_enabled = False
+    db = _sqlite_session()
+    admin = User(external_id="admin-demo", role="admin", display_name="管理员 Demo")
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
+    current = CurrentUser(id=admin.id, external_id="admin-demo", role="admin", display_name="管理员 Demo")
+
+    before = routes.admin_evaluation_report(db=db, user=current)
+    run = routes.create_evaluation_run({"name": "pytest 全量验收"}, db=db, user=current)
+    after = routes.admin_evaluation_report(db=db, user=current)
+
+    assert before["readiness"]["status"] == "not_run"
+    assert after["module"] == "production-beta-evaluation"
+    assert after["case_count"] == 10
+    assert after["latest_run"]["run_id"] == run["run_id"]
+    assert after["latest_run"]["summary"]["failed_case_ids"] == []
+    assert after["readiness"]["status"] == "ready"
+    assert after["readiness"]["ready"] is True
+    assert after["rag_evaluation"]["hit_rate"] >= 0.8
+    assert len(after["acceptance_scenarios"]) == 5
+
+
+def test_phase7_agent_quality_case_tracks_workflow_sources_and_contract():
+    settings.deepseek_enabled = False
+    db = _sqlite_session()
+    routes._ensure_default_evaluation_cases(db)
+    case = db.query(EvaluationCase).filter(EvaluationCase.case_id == "agent-composite-workflow").first()
+
+    result = routes._evaluate_case(case)
+
+    assert result["passed"] is True
+    assert result["metrics"]["workflow_agents"][:1] == ["triage"]
+    assert "medication" in result["metrics"]["workflow_agents"]
+    assert "medication-antibiotic-001" in result["metrics"]["source_ids"]
+    assert "agent_contract" in result["metrics"]["structured_keys"]
+    assert result["response"]["workflow"]["result_count"] >= 2
 
 
 def test_sql_schema_tracks_orm_tables_and_review_columns():

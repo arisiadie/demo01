@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agents.agentic_flow import AgenticRAGFlow
+from app.agents.contracts import contract_from_agent_response
+from app.agents import domain_rules
+from app.agents.router import AgentRouter, explain_plan
+from app.agents.safety_guard import SafetyGuard
 from app.agents.workflow import MultiAgentWorkflow
 from app.rag.store import KnowledgeStore, RetrievalHit
 from app.schemas.dto import AgentResponse, PatientProfileInput, SourceDTO
@@ -43,18 +47,27 @@ class OralAgentOrchestrator:
         self.store = store or KnowledgeStore()
         self.llm = llm or LLMClient()
         self.agentic_flow = AgenticRAGFlow(self.store)
+        self.router = AgentRouter()
+        self.safety_guard = SafetyGuard()
         self.workflow = MultiAgentWorkflow(self.store, self.llm)
 
     def run(self, context: AgentContext) -> AgentResponse:
-        agent_type = context.requested_agent or self.route(context.message)
+        route_plan = self.router.plan(
+            context.message,
+            requested_agent=context.requested_agent,
+            patient_profile=context.patient_profile,
+            has_image=context.has_image,
+        )
+        agent_type = route_plan.primary_agent
         safety = assess_message(context.message, agent_type=agent_type, has_image=context.has_image)
         trace = [
             f"意图识别：{agent_type}",
+            *explain_plan(route_plan),
             "Agentic RAG：准备问题拆解与多轮检索",
         ]
 
         if safety.blocked:
-            return AgentResponse(
+            response = AgentResponse(
                 agent_type=agent_type,
                 agent_name=AGENT_NAMES[agent_type],
                 summary="检测到可能的提示词注入或越权指令，本次仅保留医疗安全边界提示。",
@@ -68,18 +81,23 @@ class OralAgentOrchestrator:
                 sources=[],
                 agent_trace=trace + ["安全校验：拦截提示词注入"],
                 safety_flags=safety.flags,
+                structured_data={"agent_plan": route_plan.as_dict()},
             )
+            self._finalize_response(response, context=context, safety_flags=safety.flags, agent_plan=route_plan.as_dict())
+            return response
 
+        retrieval_categories = _categories_for_agent_plan(route_plan.as_dict())
         plan = self.agentic_flow.run(
             message=context.message,
             agent_type=agent_type,
-            categories=CATEGORY_BY_AGENT[agent_type],
+            categories=retrieval_categories,
             top_k=5,
+            planned_queries=route_plan.retrieval_queries,
         )
         hits = plan.merged_hits
         if not hits:
             refusal = refusal_for_no_evidence()
-            return AgentResponse(
+            response = AgentResponse(
                 agent_type=agent_type,
                 agent_name=AGENT_NAMES[agent_type],
                 summary=str(refusal["summary"]),
@@ -93,7 +111,14 @@ class OralAgentOrchestrator:
                 sources=[],
                 agent_trace=trace + plan.trace + ["低置信度拒答：未检索到可引用来源"],
                 safety_flags=safety.flags + ["low_retrieval_confidence"],
+                structured_data={
+                    "agent_plan": route_plan.as_dict(),
+                    "rag_plan": plan.as_dict(),
+                    "source_bindings": _build_source_bindings([], plan),
+                },
             )
+            self._finalize_response(response, context=context, safety_flags=safety.flags, agent_plan=route_plan.as_dict())
+            return response
 
         evidence = [hit.document.content for hit in hits[:3]]
         response = self._agent_response(agent_type, context, hits, evidence)
@@ -106,15 +131,20 @@ class OralAgentOrchestrator:
         if response.structured_data is None:
             response.structured_data = {}
         response.structured_data["cross_agent_review"] = cross_review
+        response.structured_data["agent_plan"] = route_plan.as_dict()
+        response.structured_data["rag_plan"] = plan.as_dict()
+        response.structured_data["source_bindings"] = _build_source_bindings(response.sources, plan)
         if cross_review["final_review_required"]:
             response.doctor_review_required = True
-        _apply_medical_safety_boundary(response, safety.flags)
+        if route_plan.doctor_review_required:
+            response.doctor_review_required = True
         response.agent_trace = trace + plan.trace + response.agent_trace + ["合规自检：已追加来源引用与医生复核标记"]
         response.agent_trace.append(f"多智能体交叉复核：{cross_review['summary']}")
+        self._finalize_response(response, context=context, safety_flags=safety.flags, agent_plan=route_plan.as_dict())
         return response
 
     def route(self, message: str) -> str:
-        return self.workflow.route(message)
+        return self.router.plan(message).primary_agent
     
     def run_workflow(self, context: AgentContext) -> dict[str, Any]:
         """Run the dynamic multi-agent workflow with handoffs."""
@@ -144,6 +174,12 @@ class OralAgentOrchestrator:
                 "patient_profile": profile_dict,
                 "has_image": context.has_image,
                 "requested_agent": context.requested_agent,
+                "agent_plan": self.router.plan(
+                    context.message,
+                    requested_agent=context.requested_agent,
+                    patient_profile=context.patient_profile,
+                    has_image=context.has_image,
+                ).as_dict(),
             }
         )
         
@@ -161,6 +197,24 @@ class OralAgentOrchestrator:
         """Update the workflow graph structure dynamically."""
         self.workflow.update_graph(nodes, edges)
 
+    def _finalize_response(
+        self,
+        response: AgentResponse,
+        *,
+        context: AgentContext,
+        safety_flags: list[str],
+        agent_plan: dict[str, Any] | None,
+    ) -> None:
+        self.safety_guard.apply(
+            response,
+            message=context.message,
+            agent_type=response.agent_type,
+            has_image=context.has_image,
+            safety_flags=safety_flags,
+            agent_plan=agent_plan,
+        )
+        _attach_agent_contract(response)
+
     def _agent_response(
         self,
         agent_type: str,
@@ -174,7 +228,7 @@ class OralAgentOrchestrator:
         structured_data: dict[str, Any] | None = None
 
         if agent_type == "triage":
-            triage_report = _build_triage_report(context.message, context.patient_profile)
+            triage_report = domain_rules.build_triage_report(context.message, context.patient_profile)
             structured_data = {"triage_report": triage_report}
             llm_result = self.llm.compose(
                 agent_name=AGENT_NAMES[agent_type],
@@ -198,7 +252,7 @@ class OralAgentOrchestrator:
             risk_level = {"urgent": "high", "soon": "medium", "routine": "low"}[triage_report["urgency_level"]]
             doctor_review = risk_level in {"medium", "high"}
         elif agent_type == "treatment":
-            treatment_comparison = _build_treatment_comparison(context.message)
+            treatment_comparison = domain_rules.build_treatment_comparison(context.message)
             structured_data = {"treatment_comparison": treatment_comparison}
             llm_result = self.llm.compose(
                 agent_name=AGENT_NAMES[agent_type],
@@ -212,10 +266,10 @@ class OralAgentOrchestrator:
                 "向医生确认牙位、治疗目标、复诊次数、修复方式和费用构成",
                 "对比方案的疗程、费用影响因素、维护要求和替代方案",
             ]
-            risk_level = "low"
-            doctor_review = False
+            risk_level = treatment_comparison.get("risk_level", "low")
+            doctor_review = bool(treatment_comparison.get("doctor_review_required", False))
         elif agent_type == "medication":
-            medication_check = _build_medication_check(context.message, context.patient_profile)
+            medication_check = domain_rules.build_medication_check(context.message, context.patient_profile)
             structured_data = {"medication_check": medication_check}
             llm_result = self.llm.compose(
                 agent_name=AGENT_NAMES[agent_type],
@@ -240,33 +294,41 @@ class OralAgentOrchestrator:
             if medication_check["interactions"]:
                 safety_flags.append("drug_interaction_risk")
         elif agent_type == "imaging":
+            imaging_report_analysis = domain_rules.build_imaging_report_analysis(
+                context.message,
+                context.patient_profile,
+                has_image=context.has_image,
+            )
+            structured_data = {"imaging_report_analysis": imaging_report_analysis}
             llm_result = self.llm.compose(
                 agent_name=AGENT_NAMES[agent_type],
                 message=context.message,
                 evidence=evidence,
                 instruction="仅解释报告文本术语；图片上传只做预览归档，不进行真实图像诊断。",
             )
-            summary = llm_result.text
+            summary = f"{llm_result.text} 影像报告文本解析：{imaging_report_analysis['summary_note']}"
             risk_tips = [
                 "影像结论必须结合口内检查、牙髓活力、牙周探诊等临床信息。",
                 "本平台不对上传图片作真实影像识别或诊断。",
             ]
-            next_steps = ["请携带原始影像和报告到口腔医生处复核", "如涉及阻生齿、种植或根尖病变，建议专科评估"]
-            risk_level = "medium"
-            doctor_review = True
+            next_steps = imaging_report_analysis["recommended_next_steps"]
+            risk_level = imaging_report_analysis.get("risk_level", "medium")
+            doctor_review = bool(imaging_report_analysis.get("doctor_review_required", True))
             safety_flags.append("visual_diagnosis_disabled")
         else:
+            health_plan = domain_rules.build_health_plan(context.message, context.patient_profile)
+            structured_data = {"health_plan": health_plan}
             llm_result = self.llm.compose(
                 agent_name=AGENT_NAMES[agent_type],
                 message=context.message,
                 evidence=evidence,
                 instruction="生成个性化口腔健康计划，包含刷牙、牙线、洁牙/复诊和特殊阶段维护。",
             )
-            summary = llm_result.text
-            risk_tips = ["健康管理计划应根据实际龋风险、牙周状态和医生检查结果调整。"]
-            next_steps = ["建立复诊提醒", "记录刷牙、牙线、洁牙和治疗维护情况"]
-            risk_level = "low"
-            doctor_review = False
+            summary = f"{llm_result.text} 个性化健康计划：{health_plan['plan_summary']}"
+            risk_tips = health_plan["risk_tips"]
+            next_steps = health_plan["next_steps"]
+            risk_level = health_plan.get("risk_level", "low")
+            doctor_review = bool(health_plan.get("doctor_review_required", False))
 
         if profile_notes:
             summary = f"{summary} 用户资料提示：{profile_notes}"
@@ -330,6 +392,56 @@ def _merge_workflow_into_response(response: AgentResponse, workflow_result: dict
     visited = workflow_result.get("visited_agents") or []
     if visited:
         response.agent_trace.append(f"动态多智能体执行链：{' -> '.join(visited)}")
+
+
+def _attach_agent_contract(response: AgentResponse) -> None:
+    if response.structured_data is None:
+        response.structured_data = {}
+    response.structured_data["agent_contract"] = contract_from_agent_response(response)
+
+
+def _categories_for_agent_plan(agent_plan: dict[str, Any]) -> list[str]:
+    agent_ids = [str(agent_plan.get("primary_agent") or "")]
+    agent_ids.extend(str(agent_id) for agent_id in agent_plan.get("secondary_agents") or [])
+    categories: list[str] = []
+    for agent_id in agent_ids:
+        categories.extend(CATEGORY_BY_AGENT.get(agent_id, []))
+    if agent_plan.get("risk_signals"):
+        categories.append("safety")
+    return _dedupe(categories) or ["health"]
+
+
+def _build_source_bindings(sources: list[SourceDTO], plan: Any) -> list[dict[str, Any]]:
+    source_ids = [source.id for source in sources]
+    top_source_ids = source_ids[:3]
+    bindings = [
+        {
+            "claim": "结论摘要",
+            "source_ids": top_source_ids,
+            "reason": "摘要由最高排序的 RAG 来源支撑。",
+        },
+        {
+            "claim": "风险提示",
+            "source_ids": top_source_ids,
+            "reason": "风险提示结合医疗安全边界和检索命中来源生成。",
+        },
+        {
+            "claim": "建议下一步",
+            "source_ids": top_source_ids,
+            "reason": "下一步建议需结合检索依据和医生复核边界。",
+        },
+    ]
+    step_bindings = []
+    for step in getattr(plan, "steps", []) or []:
+        step_bindings.append(
+            {
+                "claim": f"{step.name} 检索依据",
+                "source_ids": [hit.document.id for hit in step.hits[:3]],
+                "query": step.query,
+                "categories": step.categories,
+            }
+        )
+    return bindings + step_bindings
 
 
 def _apply_medical_safety_boundary(response: AgentResponse, safety_flags: list[str]) -> None:

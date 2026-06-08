@@ -512,3 +512,72 @@ class WorkflowEdge(Base):
     label: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     config: Mapped[WorkflowConfig] = relationship(back_populates="edges")
+
+
+class EvaluationCase(Base):
+    __tablename__ = "evaluation_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    case_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(160), index=True)
+    evaluation_type: Mapped[str] = mapped_column(String(40), index=True)
+    agent_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text)
+    requested_agent: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    expected_agent: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    expected_doc_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    expected_safety_flags_json: Mapped[str] = mapped_column(Text, default="[]")
+    expected_structured_keys_json: Mapped[str] = mapped_column(Text, default="[]")
+    expected_review_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    expected_refusal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    difficulty: Mapped[str] = mapped_column(String(20), default="medium", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    results: Mapped[list["EvaluationResult"]] = relationship(back_populates="case")
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    run_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    total_cases: Mapped[int] = mapped_column(Integer, default=0)
+    passed_cases: Mapped[int] = mapped_column(Integer, default=0)
+    failed_cases: Mapped[int] = mapped_column(Integer, default=0)
+    pass_rate: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    rag_hit_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    safety_pass_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    agent_quality_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    results: Mapped[list["EvaluationResult"]] = relationship(back_populates="run")
+
+
+class EvaluationResult(Base):
+    __tablename__ = "evaluation_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    run_db_id: Mapped[int] = mapped_column(ForeignKey("evaluation_runs.id"), index=True)
+    case_db_id: Mapped[int | None] = mapped_column(ForeignKey("evaluation_cases.id"), nullable=True, index=True)
+    case_id: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(160))
+    evaluation_type: Mapped[str] = mapped_column(String(40), index=True)
+    agent_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    passed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    failures_json: Mapped[str] = mapped_column(Text, default="[]")
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    run: Mapped[EvaluationRun] = relationship(back_populates="results")
+    case: Mapped[EvaluationCase | None] = relationship(back_populates="results")
