@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+uvicorn*.log
+data/app.db
+data/chroma/
+data/uploads/*
+!data/uploads/.gitkeep
