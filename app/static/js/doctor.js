@@ -1,7 +1,7 @@
 import { request } from "./shared/api.js";
 import { getCurrentUser } from "./shared/state.js";
 import { logout, requireRole } from "./shared/auth.js";
-import { showToast, setStatus, openModal, closeModal } from "./shared/components.js";
+import { showToast, setStatus, openModal, closeModal, flushPendingToast } from "./shared/components.js";
 import { escapeHtml, formatDate, riskLabel, agentLabel, agentRoleLabel } from "./shared/format.js";
 import {
   renderStructuredData,
@@ -272,6 +272,7 @@ async function initDoctorApp() {
   const user = await requireRole("doctor");
   if (!user) return;
   renderCurrentUser();
+  flushPendingToast();
   bindDoctorEvents();
   loadReviews();
 }

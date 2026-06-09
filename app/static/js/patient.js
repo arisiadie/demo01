@@ -1,7 +1,7 @@
 import { request } from "./shared/api.js";
 import { getCurrentUser } from "./shared/state.js";
 import { logout, requireRole } from "./shared/auth.js";
-import { showToast, setStatus, renderSimpleTable } from "./shared/components.js";
+import { showToast, setStatus, renderSimpleTable, flushPendingToast } from "./shared/components.js";
 import {
   escapeHtml,
   formatDate,
@@ -576,6 +576,7 @@ async function initPatientApp() {
   const user = await requireRole("patient");
   if (!user) return;
   renderCurrentUser();
+  flushPendingToast();
   bindPatientEvents();
   loadScenarios().catch(showError);
   loadProfile();

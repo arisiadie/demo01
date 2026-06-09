@@ -1,5 +1,6 @@
 import { request } from "./api.js";
 import { setToken, setCurrentUser, clearSession, getCurrentUser } from "./state.js";
+import { setPendingToast } from "./components.js";
 
 const LOGIN_PAGE = "/static/index.html";
 
@@ -8,6 +9,8 @@ const ROLE_PAGE = {
   doctor: "/static/doctor.html",
   admin: "/static/admin.html",
 };
+
+const ROLE_LABEL = { patient: "患者", doctor: "医生", admin: "管理员" };
 
 export async function login(externalId, password) {
   const data = await request("/api/auth/login", {
@@ -42,6 +45,8 @@ export async function requireRole(role) {
     const me = await request("/api/auth/me");
     setCurrentUser(me);
     if (me.role !== role) {
+      const dest = ROLE_LABEL[me.role] || "对应";
+      setPendingToast(`无权限访问${ROLE_LABEL[role] || ""}页面，已返回${dest}工作台`, "warning");
       redirectByRole(me);
       return null;
     }

@@ -21,6 +21,29 @@ export function setStatus(text) {
   if (el) el.textContent = text;
 }
 
+const PENDING_TOAST_KEY = "oralcare_pending_toast";
+
+// Queue a toast to be shown after a page navigation (survives the redirect).
+export function setPendingToast(message, type = "success") {
+  try {
+    sessionStorage.setItem(PENDING_TOAST_KEY, JSON.stringify({ message, type }));
+  } catch {
+    // sessionStorage unavailable; skip silently
+  }
+}
+
+// Show and clear any queued toast. Call once on page load.
+export function flushPendingToast() {
+  let pending = null;
+  try {
+    pending = JSON.parse(sessionStorage.getItem(PENDING_TOAST_KEY) || "null");
+    sessionStorage.removeItem(PENDING_TOAST_KEY);
+  } catch {
+    return;
+  }
+  if (pending?.message) showToast(pending.message, pending.type || "success");
+}
+
 export function renderLoading(message = "正在加载...") {
   return `<div class="loading-spinner">${escapeHtml(message)}</div>`;
 }
