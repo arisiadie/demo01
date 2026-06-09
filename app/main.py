@@ -16,6 +16,7 @@ from app.models import entities  # noqa: F401
 from app.services.rate_limit import InMemoryRateLimitMiddleware
 
 
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
