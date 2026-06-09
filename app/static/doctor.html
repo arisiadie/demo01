@@ -4,11 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>医生端 · 口腔医疗智能助手</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles/base.css" />
+    <link rel="stylesheet" href="/static/styles/layout.css" />
+    <link rel="stylesheet" href="/static/styles/components.css" />
+    <link rel="stylesheet" href="/static/styles/doctor.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
+        <button class="nav-toggle" id="navToggle" aria-label="菜单">☰</button>
         <div class="brand-icon">🩺</div>
         <div class="brand-text">
           <h1>医生复核工作台</h1>
@@ -21,23 +25,58 @@
       </div>
     </header>
 
-    <main class="layout">
-      <section class="workspace">
-        <section id="resultPanel" class="result-panel empty">
-          <p>从右侧待复核队列选择咨询，查看 AI 结果、来源与执行轨迹后提交复核。</p>
-        </section>
-      </section>
-
-      <aside class="rightbar">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>医生复核</h2>
-            <button id="refreshReviewBtn">刷新</button>
-          </div>
-          <div id="reviewList" class="review-list"></div>
-        </section>
+    <div class="app-shell">
+      <aside class="app-nav" id="appNav">
+        <button class="nav-item" data-section="dashboard">首页概览</button>
+        <button class="nav-item" data-section="reviews">待复核队列</button>
+        <button class="nav-item" data-section="highRisk">高风险</button>
+        <button class="nav-item" data-section="history">复核历史</button>
       </aside>
-    </main>
+
+      <main class="app-workspace">
+        <h2 class="section-title" id="sectionTitle">首页概览</h2>
+
+        <!-- 首页概览 -->
+        <section class="app-section" data-section="dashboard">
+          <div id="dashboardBox" class="doctor-dash-grid"></div>
+        </section>
+
+        <!-- 待复核队列 -->
+        <section class="app-section" data-section="reviews" hidden>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>待复核队列</h2>
+              <button id="refreshReviewBtn">刷新</button>
+            </div>
+            <div id="reviewList" class="review-list"></div>
+          </div>
+          <div id="reportPanel"></div>
+        </section>
+
+        <!-- 高风险 -->
+        <section class="app-section" data-section="highRisk" hidden>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>高风险咨询</h2>
+              <button id="refreshHighRiskBtn">刷新</button>
+            </div>
+            <div id="highRiskList" class="review-list"></div>
+          </div>
+          <div id="highRiskReportPanel"></div>
+        </section>
+
+        <!-- 复核历史 -->
+        <section class="app-section" data-section="history" hidden>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>复核历史</h2>
+              <button id="refreshHistoryBtn">刷新</button>
+            </div>
+            <div id="historyList" class="review-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <footer class="footer">
       <span>内测安全边界：不自动诊断、不自动处方、不做真实影像识别</span>

@@ -1,0 +1,99 @@
+/* ===== Doctor: three-column report layout ===== */
+.doctor-report {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.report-col {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.report-col > h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-col.patient-col > h3::before { content: "\1F464"; }
+.report-col.ai-col > h3::before { content: "\1F9E0"; }
+.report-col.review-col > h3::before { content: "\1F4DD"; }
+
+.report-col label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 1100px) {
+  .doctor-report {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Doctor: review queue ===== */
+.review-item.high-risk {
+  border-left-width: 4px;
+  border-left-color: var(--danger);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.review-item.resolved {
+  opacity: 0.6;
+}
+
+.review-item .review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.risk-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.risk-flag.risk-high {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+
+.risk-flag.risk-medium {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+}
+
+.risk-flag.risk-low {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+}
+
+/* ===== Doctor dashboard ===== */
+.doctor-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}

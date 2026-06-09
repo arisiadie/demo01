@@ -1,0 +1,131 @@
+/* ===== Admin: action grid ===== */
+.admin-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.admin-actions button {
+  font-size: 12px;
+  padding: 10px 12px;
+}
+
+.admin-actions button:hover {
+  transform: none;
+}
+
+/* ===== Admin: output panel ===== */
+.admin-panel {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.knowledge-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+#workflowJsonInput {
+  margin-top: 12px;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 12px;
+}
+
+/* ===== Admin: rows ===== */
+.admin-row {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin: 10px 0;
+}
+
+.admin-row p {
+  margin: 6px 0 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.admin-row.alert-high {
+  border-left: 3px solid var(--danger);
+}
+
+.admin-row.alert-medium {
+  border-left: 3px solid var(--warning);
+}
+
+.admin-row.alert-low {
+  border-left: 3px solid var(--success);
+}
+
+/* ===== Admin: metric grid (dashboard) ===== */
+.admin-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.admin-metric-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-metric-card .metric-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.admin-metric-card .metric-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.admin-metric-card.accent {
+  border-left: 3px solid var(--brand-primary);
+}
+
+/* ===== Admin: workflow editor (JSON + preview) ===== */
+.workflow-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.workflow-editor .workflow-pane {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+}
+
+@media (max-width: 1100px) {
+  .workflow-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .admin-actions {
+    grid-template-columns: 1fr;
+  }
+}

@@ -20,14 +20,39 @@ import {
   renderList,
   renderReviewStatus,
 } from "./shared/result.js";
+import { normalizeConsultationDetail } from "./shared/normalizers.js";
+import {
+  initNav,
+  setPageTitle,
+  setBusy,
+  showSkeleton,
+  showEmpty,
+  setError,
+  openDrawer,
+} from "./shared/view.js";
 
 const DEPTH = { depth: "patient" };
+const SECTION_TITLES = {
+  dashboard: "首页概览",
+  consult: "智能咨询",
+  medication: "用药审查",
+  imaging: "影像报告",
+  health: "健康管理",
+  history: "历史记录",
+  profile: "个人档案",
+  privacy: "隐私中心",
+};
 const els = {};
+let scenariosLoaded = false;
+let careLoaded = false;
 
 function cacheEls() {
   const ids = [
-    "currentUserText", "logoutBtn", "scenarioList", "agentSelect", "messageInput",
-    "sendBtn", "clearBtn", "reportInput", "imageInput", "imagingBtn", "resultPanel",
+    "currentUserText", "logoutBtn", "scenarioList", "reloadScenariosBtn",
+    "agentSelect", "messageInput", "sendBtn", "clearBtn", "resultPanel",
+    "medicationInput", "medicationBtn", "medicationResultPanel",
+    "reportInput", "imageInput", "imagingBtn", "imagingResultPanel",
+    "dashboardBox",
     "historyList", "refreshHistoryBtn", "profileNameInput", "ageInput", "sexInput",
     "pregnancyInput", "allergyInput", "conditionInput", "oralHistoryInput",
     "saveProfileBtn", "loadCareBtn", "careBox", "recordTreatmentInput",
@@ -35,7 +60,7 @@ function cacheEls() {
     "addReminderBtn", "toothPositionInput", "toothStatusInput", "toothCycleInput",
     "addToothRecordBtn", "loadToothChartBtn", "loadMaintenanceBtn", "loadEducationFeedBtn",
     "pushEducationFeedBtn", "runDueNotificationsBtn", "signConsentBtn", "loadConsentsBtn",
-    "requestExportBtn", "requestDeleteBtn", "loadPatientDataRequestsBtn",
+    "requestExportBtn", "requestDeleteBtn", "loadPatientDataRequestsBtn", "privacyBox",
   ];
   ids.forEach((id) => { els[id] = document.querySelector(`#${id}`); });
 }
@@ -60,24 +85,70 @@ function profilePayload() {
   };
 }
 
+// ===== Dashboard =====
+async function loadDashboard() {
+  showSkeleton(els.dashboardBox, 4);
+  try {
+    const [history, records, reminders, toothRecords] = await Promise.all([
+      request("/api/consultations/history").catch(() => []),
+      request("/api/patient/treatment-records").catch(() => []),
+      request("/api/patient/reminders").catch(() => []),
+      request("/api/patient/tooth-records").catch(() => []),
+    ]);
+    const latest = history[0];
+    const reviewPending = history.filter((h) => h.doctor_review_required).length;
+    const riskClass = latest ? `risk-${latest.risk_level}` : "";
+    els.dashboardBox.innerHTML = `
+      <div class="dashboard-card accent">
+        <span class="dash-label">历史咨询</span>
+        <span class="dash-value">${history.length}</span>
+      </div>
+      <div class="dashboard-card">
+        <span class="dash-label">待医生复核</span>
+        <span class="dash-value">${reviewPending}</span>
+      </div>
+      <div class="dashboard-card">
+        <span class="dash-label">治疗记录 / 提醒</span>
+        <span class="dash-value">${records.length} / ${reminders.length}</span>
+      </div>
+      <div class="dashboard-card">
+        <span class="dash-label">牙位档案</span>
+        <span class="dash-value">${toothRecords.length}</span>
+      </div>
+      <div class="dashboard-card ${riskClass}">
+        <span class="dash-label">最近咨询风险</span>
+        <span class="dash-value">${latest ? riskLabel(latest.risk_level) : "—"}</span>
+      </div>
+    `;
+  } catch (error) {
+    setError(els.dashboardBox, `加载失败: ${error.message}`, loadDashboard);
+  }
+}
+
 async function loadScenarios() {
-  const scenarios = await request("/api/demo/scenarios");
-  els.scenarioList.innerHTML = scenarios
-    .map((item, index) => `
-      <button class="scenario" data-index="${index}">
-        <strong>${escapeHtml(item.title)}</strong>
-        <span>${escapeHtml(item.message)}</span>
-      </button>
-    `)
-    .join("");
-  els.scenarioList.querySelectorAll(".scenario").forEach((button) => {
-    button.addEventListener("click", () => {
-      const item = scenarios[Number(button.dataset.index)];
-      els.agentSelect.value = item.agent;
-      els.messageInput.value = item.message;
-      showToast(`已加载场景: ${item.title}`);
+  if (scenariosLoaded) return;
+  try {
+    const scenarios = await request("/api/demo/scenarios");
+    els.scenarioList.innerHTML = scenarios
+      .map((item, index) => `
+        <button class="scenario" data-index="${index}">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.message)}</span>
+        </button>
+      `)
+      .join("");
+    els.scenarioList.querySelectorAll(".scenario").forEach((button) => {
+      button.addEventListener("click", () => {
+        const item = scenarios[Number(button.dataset.index)];
+        els.agentSelect.value = item.agent;
+        els.messageInput.value = item.message;
+        showToast(`已加载场景: ${item.title}`);
+      });
     });
-  });
+    scenariosLoaded = true;
+  } catch (error) {
+    setError(els.scenarioList, `场景加载失败: ${error.message}`, () => { scenariosLoaded = false; loadScenarios(); });
+  }
 }
 
 async function saveProfile() {
@@ -104,6 +175,7 @@ async function loadProfile() {
 }
 
 async function loadCare() {
+  showSkeleton(els.careBox, 3);
   try {
     const [records, reminders, notifications, toothRecords] = await Promise.all([
       request("/api/patient/treatment-records"),
@@ -111,7 +183,6 @@ async function loadCare() {
       request("/api/patient/notifications"),
       request("/api/patient/tooth-records"),
     ]);
-
     let html = "";
     if (records.length > 0) {
       html += `<div class="history-item"><strong>治疗记录</strong>`;
@@ -141,10 +212,15 @@ async function loadCare() {
       });
       html += `</div>`;
     }
-    els.careBox.innerHTML = html || "<div class='history-item'>暂无记录</div>";
+    els.careBox.innerHTML = html || renderEmptyCare();
+    careLoaded = true;
   } catch (error) {
-    els.careBox.innerHTML = `<div class='history-item'>加载失败: ${escapeHtml(error.message)}</div>`;
+    setError(els.careBox, `加载失败: ${error.message}`, loadCare);
   }
+}
+
+function renderEmptyCare() {
+  return "<div class='empty-state'><p>暂无健康档案记录</p></div>";
 }
 
 async function addTreatmentRecord() {
@@ -228,7 +304,6 @@ async function pushEducationFeed() {
     body: JSON.stringify({ limit: 5 }),
   });
   els.careBox.innerHTML = renderEducationFeed(data.feed, data.notifications, data.created_count);
-  await loadCare();
   showToast(`已生成 ${data.created_count} 条站内科普`);
 }
 
@@ -250,13 +325,13 @@ async function signConsent() {
       signature: user?.display_name || "patient-demo",
     }),
   });
-  els.careBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  els.privacyBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
   showToast("同意记录已签署");
 }
 
 async function loadConsents() {
   const data = await request("/api/patient/consents");
-  els.careBox.innerHTML = renderSimpleTable("同意记录", data, ["consent_type", "consent_version", "scope", "signed_at"]);
+  els.privacyBox.innerHTML = renderSimpleTable("同意记录", data, ["consent_type", "consent_version", "scope", "signed_at"]);
   showToast("同意记录已加载");
 }
 
@@ -269,70 +344,118 @@ async function createDataRequest(type) {
       reason: type === "export" ? "患者申请导出内测数据" : "患者申请删除内测数据",
     }),
   });
-  els.careBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  els.privacyBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
   showToast(type === "export" ? "导出申请已提交" : "删除申请已提交");
 }
 
 async function loadPatientDataRequests() {
-  const data = await request("/api/patient/data-requests");
-  els.careBox.innerHTML = renderDataRequests("我的数据申请", data);
-  showToast("数据申请记录已加载");
+  showSkeleton(els.privacyBox, 2);
+  try {
+    const data = await request("/api/patient/data-requests");
+    els.privacyBox.innerHTML = renderDataRequests("我的数据申请", data);
+    showToast("数据申请记录已加载");
+  } catch (error) {
+    setError(els.privacyBox, `加载失败: ${error.message}`, loadPatientDataRequests);
+  }
 }
 
-async function sendConsultation() {
-  const message = els.messageInput.value.trim();
+// ===== Consultation =====
+async function runConsultation({ panel, button, message, agent }) {
   if (!message) {
     showToast("请输入咨询内容", "warning");
     return;
   }
   setStatus("智能体处理中...");
-  els.sendBtn.disabled = true;
-  els.resultPanel.classList.remove("empty");
-  els.resultPanel.innerHTML = '<div class="loading-spinner">正在分析您的问题...</div>';
+  setBusy(button, true, "处理中...");
+  panel.classList.remove("empty");
+  panel.innerHTML = '<div class="loading-spinner">正在分析您的问题...</div>';
   try {
     const data = await request("/api/consultations", {
       method: "POST",
       body: JSON.stringify({
         message,
-        requested_agent: els.agentSelect.value || null,
+        requested_agent: agent || null,
         patient_profile: profilePayload(),
       }),
     });
-    els.resultPanel.classList.remove("empty", "loading");
-    els.resultPanel.innerHTML = renderAgentResult(data, DEPTH);
-    await loadHistory();
+    panel.classList.remove("empty", "loading");
+    panel.innerHTML = renderAgentResult(data, DEPTH);
+    if (data.sources && data.sources.length) {
+      openDrawer("来源引用", renderSourcesDrawer(data.sources));
+    }
+    scenariosLoaded && refreshHistorySilently();
     showToast("咨询完成");
   } catch (error) {
-    showError(error);
+    showPanelError(panel, error);
   } finally {
-    els.sendBtn.disabled = false;
+    setBusy(button, false);
     setStatus("就绪");
   }
 }
 
+function renderSourcesDrawer(sources) {
+  return `
+    <div class="source-list">
+      ${sources.map((s) => `
+        <div class="source-item">
+          <div class="source-title">${escapeHtml(s.title)}</div>
+          <div class="source-meta"><span>${escapeHtml(s.source)}</span><span>命中分: ${s.score}</span></div>
+          <div class="source-excerpt">${escapeHtml(s.excerpt)}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function sendConsultation() {
+  return runConsultation({
+    panel: els.resultPanel,
+    button: els.sendBtn,
+    message: els.messageInput.value.trim(),
+    agent: els.agentSelect.value,
+  });
+}
+
+function sendMedication() {
+  return runConsultation({
+    panel: els.medicationResultPanel,
+    button: els.medicationBtn,
+    message: els.medicationInput.value.trim(),
+    agent: "medication",
+  });
+}
+
 async function sendImaging() {
   setStatus("上传解读中...");
-  els.imagingBtn.disabled = true;
-  els.resultPanel.classList.remove("empty");
-  els.resultPanel.innerHTML = '<div class="loading-spinner">正在分析影像报告...</div>';
+  setBusy(els.imagingBtn, true, "解读中...");
+  els.imagingResultPanel.classList.remove("empty");
+  els.imagingResultPanel.innerHTML = '<div class="loading-spinner">正在分析影像报告...</div>';
   try {
     const form = new FormData();
     form.append("report_text", els.reportInput.value.trim());
     if (els.imageInput.files[0]) form.append("image", els.imageInput.files[0]);
     const data = await request("/api/imaging/analyze", { method: "POST", body: form });
-    els.resultPanel.classList.remove("empty", "loading");
-    els.resultPanel.innerHTML = renderAgentResult(data, DEPTH);
-    await loadHistory();
+    els.imagingResultPanel.classList.remove("empty", "loading");
+    els.imagingResultPanel.innerHTML = renderAgentResult(data, DEPTH);
     showToast("影像解读完成");
   } catch (error) {
-    showError(error);
+    showPanelError(els.imagingResultPanel, error);
   } finally {
-    els.imagingBtn.disabled = false;
+    setBusy(els.imagingBtn, false);
     setStatus("就绪");
   }
 }
 
+async function refreshHistorySilently() {
+  try {
+    await loadHistory();
+  } catch {
+    // non-blocking
+  }
+}
+
 async function loadHistory() {
+  showSkeleton(els.historyList, 4);
   try {
     const rows = await request("/api/consultations/history");
     els.historyList.innerHTML = rows.length
@@ -351,61 +474,58 @@ async function loadHistory() {
             `,
           )
           .join("")
-      : "<div class='history-item'>暂无历史记录</div>";
+      : renderEmptyHistory();
     els.historyList.querySelectorAll("[data-history]").forEach((item) => {
       item.addEventListener("click", () => loadConsultationDetail(item.dataset.history));
     });
   } catch (error) {
-    els.historyList.innerHTML = `<div class="history-item">加载失败: ${escapeHtml(error.message)}</div>`;
+    setError(els.historyList, `加载失败: ${error.message}`, loadHistory);
   }
+}
+
+function renderEmptyHistory() {
+  return "<div class='empty-state'><p>暂无历史记录</p></div>";
 }
 
 async function loadConsultationDetail(consultationId) {
   try {
     const data = await request(`/api/consultations/${consultationId}`);
-    renderConsultationArchive(data);
+    openDrawer(`历史归档 #${consultationId}`, renderConsultationArchive(data));
     showToast("历史归档已加载");
   } catch (error) {
-    showError(error);
+    showToast(error.message, "error");
   }
 }
 
 function renderConsultationArchive(data) {
-  const consultation = data.consultation || {};
-  const response = data.agent_response || {};
+  const d = normalizeConsultationDetail(data);
+  const consultation = d.consultation;
   let html = `
-    <div class="result-header">
-      <div class="result-title">
-        <h3>历史归档 #${escapeHtml(consultation.id)}</h3>
-        <span class="agent-badge">${agentLabel(consultation.agent_type)}</span>
-      </div>
-    </div>
     <div class="result-metrics">
       <div class="metric-card risk-${consultation.risk_level}"><span>风险等级</span><strong>${riskLabel(consultation.risk_level)}</strong></div>
       <div class="metric-card"><span>状态</span><strong>${escapeHtml(consultation.status)}</strong></div>
       <div class="metric-card"><span>医生复核</span><strong>${consultation.doctor_review_required ? "需要" : "暂不需要"}</strong></div>
-      <div class="metric-card"><span>来源</span><strong>${(data.retrieval_hits || []).length}</strong></div>
+      <div class="metric-card"><span>来源</span><strong>${d.retrievalHits.length}</strong></div>
     </div>
     <div class="result-section">
       <h4>用户输入</h4>
-      <p>${escapeHtml(consultation.sanitized_input || consultation.input_text || "")}</p>
+      <p>${escapeHtml(d.input)}</p>
     </div>
     <div class="result-section">
       <h4>归档摘要</h4>
-      <p>${escapeHtml(consultation.summary || response.summary || "")}</p>
+      <p>${escapeHtml(d.summary)}</p>
     </div>
   `;
-  html += renderStructuredData(data.structured_outputs || response.structured_data, "patient");
-  html += renderObjectList("检索来源", data.retrieval_hits || consultation.sources || [], "title", "excerpt");
-  if (data.review) html += renderReviewStatus(data.review);
+  html += renderStructuredData(d.structured, "patient");
+  html += renderObjectList("检索来源", d.retrievalHits, "title", "excerpt");
+  if (d.review) html += renderReviewStatus(d.review);
   html += `
     <div class="result-section">
       <h4>免责声明</h4>
-      <p>${escapeHtml(data.disclaimer || response.disclaimer || "")}</p>
+      <p>${escapeHtml(d.disclaimer)}</p>
     </div>
   `;
-  els.resultPanel.classList.remove("empty");
-  els.resultPanel.innerHTML = html;
+  return html;
 }
 
 function renderToothRecordResult(data) {
@@ -528,46 +648,58 @@ function renderDataRequests(title, rows) {
         ${item.processed_at ? `<p>处理人：${escapeHtml(item.processed_by || "-")} · ${formatDate(item.processed_at)} · ${escapeHtml(item.note || "")}</p>` : ""}
         ${item.result_data ? `<details class="export-details"><summary>查看导出数据预览</summary><pre>${escapeHtml(JSON.stringify(item.result_data, null, 2))}</pre></details>` : ""}
       </div>
-    `).join("") : "<div class='admin-row'>暂无数据请求</div>"}
+    `).join("") : "<div class='empty-state'><p>暂无数据请求</p></div>"}
   `;
 }
 
-function showError(error) {
+function showPanelError(panel, error) {
   setStatus("发生错误");
-  els.resultPanel.classList.remove("empty", "loading");
-  els.resultPanel.innerHTML = `
-    <div style="text-align: center; padding: 40px;">
-      <div style="font-size: 48px; margin-bottom: 16px;">✕</div>
-      <h3 style="color: var(--danger);">请求失败</h3>
-      <p>${escapeHtml(error.message)}</p>
+  panel.classList.remove("empty", "loading");
+  panel.innerHTML = `
+    <div class="error-state">
+      <p>请求失败：${escapeHtml(error.message)}</p>
     </div>
   `;
   showToast(error.message, "error");
 }
 
+// ===== Section lazy-load on nav switch =====
+function onSection(section) {
+  setPageTitle(SECTION_TITLES[section] || "");
+  if (section === "dashboard") loadDashboard();
+  else if (section === "consult") loadScenarios();
+  else if (section === "health" && !careLoaded) loadCare();
+  else if (section === "history") loadHistory();
+  else if (section === "privacy" && !els.privacyBox.innerHTML.trim()) {
+    els.privacyBox.innerHTML = "<div class='empty-state'><p>选择上方操作查看同意记录或数据申请</p></div>";
+  }
+}
+
 function bindPatientEvents() {
   els.logoutBtn.addEventListener("click", logout);
+  els.reloadScenariosBtn.addEventListener("click", () => { scenariosLoaded = false; loadScenarios(); });
   els.sendBtn.addEventListener("click", sendConsultation);
+  els.medicationBtn.addEventListener("click", sendMedication);
   els.imagingBtn.addEventListener("click", sendImaging);
   els.clearBtn.addEventListener("click", () => {
     els.messageInput.value = "";
     els.agentSelect.value = "";
   });
-  els.saveProfileBtn.addEventListener("click", () => saveProfile().catch(showError));
-  els.loadCareBtn.addEventListener("click", () => loadCare().catch(showError));
-  els.addRecordBtn.addEventListener("click", () => addTreatmentRecord().catch(showError));
-  els.addReminderBtn.addEventListener("click", () => addReminder().catch(showError));
-  els.addToothRecordBtn.addEventListener("click", () => addToothRecord().catch(showError));
-  els.loadToothChartBtn.addEventListener("click", () => loadToothChart().catch(showError));
-  els.loadMaintenanceBtn.addEventListener("click", () => loadMaintenancePlan().catch(showError));
-  els.loadEducationFeedBtn.addEventListener("click", () => loadEducationFeed().catch(showError));
-  els.pushEducationFeedBtn.addEventListener("click", () => pushEducationFeed().catch(showError));
-  els.runDueNotificationsBtn.addEventListener("click", () => runDueNotifications().catch(showError));
-  els.signConsentBtn.addEventListener("click", () => signConsent().catch(showError));
-  els.loadConsentsBtn.addEventListener("click", () => loadConsents().catch(showError));
-  els.requestExportBtn.addEventListener("click", () => createDataRequest("export").catch(showError));
-  els.requestDeleteBtn.addEventListener("click", () => createDataRequest("delete").catch(showError));
-  els.loadPatientDataRequestsBtn.addEventListener("click", () => loadPatientDataRequests().catch(showError));
+  els.saveProfileBtn.addEventListener("click", () => saveProfile().catch((e) => showToast(e.message, "error")));
+  els.loadCareBtn.addEventListener("click", () => loadCare().catch((e) => showToast(e.message, "error")));
+  els.addRecordBtn.addEventListener("click", () => addTreatmentRecord().catch((e) => showToast(e.message, "error")));
+  els.addReminderBtn.addEventListener("click", () => addReminder().catch((e) => showToast(e.message, "error")));
+  els.addToothRecordBtn.addEventListener("click", () => addToothRecord().catch((e) => showToast(e.message, "error")));
+  els.loadToothChartBtn.addEventListener("click", () => loadToothChart().catch((e) => showToast(e.message, "error")));
+  els.loadMaintenanceBtn.addEventListener("click", () => loadMaintenancePlan().catch((e) => showToast(e.message, "error")));
+  els.loadEducationFeedBtn.addEventListener("click", () => loadEducationFeed().catch((e) => showToast(e.message, "error")));
+  els.pushEducationFeedBtn.addEventListener("click", () => pushEducationFeed().catch((e) => showToast(e.message, "error")));
+  els.runDueNotificationsBtn.addEventListener("click", () => runDueNotifications().catch((e) => showToast(e.message, "error")));
+  els.signConsentBtn.addEventListener("click", () => signConsent().catch((e) => showToast(e.message, "error")));
+  els.loadConsentsBtn.addEventListener("click", () => loadConsents().catch((e) => showToast(e.message, "error")));
+  els.requestExportBtn.addEventListener("click", () => createDataRequest("export").catch((e) => showToast(e.message, "error")));
+  els.requestDeleteBtn.addEventListener("click", () => createDataRequest("delete").catch((e) => showToast(e.message, "error")));
+  els.loadPatientDataRequestsBtn.addEventListener("click", () => loadPatientDataRequests().catch((e) => showToast(e.message, "error")));
   els.refreshHistoryBtn.addEventListener("click", loadHistory);
 }
 
@@ -578,10 +710,8 @@ async function initPatientApp() {
   renderCurrentUser();
   flushPendingToast();
   bindPatientEvents();
-  loadScenarios().catch(showError);
   loadProfile();
-  loadHistory();
-  loadCare();
+  initNav("dashboard", onSection);
 }
 
 initPatientApp();

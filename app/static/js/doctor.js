@@ -1,24 +1,42 @@
 import { request } from "./shared/api.js";
 import { getCurrentUser } from "./shared/state.js";
 import { logout, requireRole } from "./shared/auth.js";
-import { showToast, setStatus, openModal, closeModal, flushPendingToast } from "./shared/components.js";
-import { escapeHtml, formatDate, riskLabel, agentLabel, agentRoleLabel } from "./shared/format.js";
+import { showToast, openModal, closeModal, flushPendingToast } from "./shared/components.js";
+import { escapeHtml, riskLabel, agentLabel, agentRoleLabel } from "./shared/format.js";
 import {
   renderStructuredData,
   renderObjectList,
   renderTrace,
   renderLlmCalls,
 } from "./shared/result.js";
+import { normalizeDoctorReport } from "./shared/normalizers.js";
+import {
+  initNav,
+  setPageTitle,
+  showSkeleton,
+  setError,
+} from "./shared/view.js";
 
+const SECTION_TITLES = {
+  dashboard: "首页概览",
+  reviews: "待复核队列",
+  highRisk: "高风险咨询",
+  history: "复核历史",
+};
+const PENDING_STATES = ["pending", "returned_for_info", "escalated"];
 const els = {};
+let allReviews = [];
 let currentReviewId = null;
 let currentReviewStatus = null;
 let currentModalOverlay = null;
 
 function cacheEls() {
-  ["currentUserText", "logoutBtn", "resultPanel", "reviewList", "refreshReviewBtn"].forEach((id) => {
-    els[id] = document.querySelector(`#${id}`);
-  });
+  [
+    "currentUserText", "logoutBtn", "dashboardBox",
+    "reviewList", "refreshReviewBtn", "reportPanel",
+    "highRiskList", "refreshHighRiskBtn", "highRiskReportPanel",
+    "historyList", "refreshHistoryBtn",
+  ].forEach((id) => { els[id] = document.querySelector(`#${id}`); });
 }
 
 function renderCurrentUser() {
@@ -28,103 +46,178 @@ function renderCurrentUser() {
     : "未登录";
 }
 
-function showError(error) {
-  setStatus("发生错误");
-  els.resultPanel.classList.remove("empty", "loading");
-  els.resultPanel.innerHTML = `
-    <div style="text-align: center; padding: 40px;">
-      <div style="font-size: 48px; margin-bottom: 16px;">✕</div>
-      <h3 style="color: var(--danger);">请求失败</h3>
-      <p>${escapeHtml(error.message)}</p>
+// ===== Fetch once, filter per section =====
+async function fetchReviews(force = false) {
+  if (allReviews.length && !force) return allReviews;
+  allReviews = await request("/api/doctor/reviews");
+  return allReviews;
+}
+
+function reviewRow(row, { actions = true } = {}) {
+  const pending = PENDING_STATES.includes(row.status);
+  const resolved = row.status === "approved" || row.status === "rejected" || row.status === "needs_followup";
+  const cls = [
+    "review-item",
+    row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : "",
+    row.risk_level === "high" ? "high-risk" : "",
+    resolved ? "resolved" : "",
+  ].filter(Boolean).join(" ");
+  return `
+    <div class="${cls}">
+      <strong>复核 #${row.review_id} · 咨询 #${row.consultation_id}</strong>
+      <div class="review-meta">
+        <span>状态: ${escapeHtml(row.status)}</span>
+        <span class="risk-flag risk-${row.risk_level}">${riskLabel(row.risk_level)}风险</span>
+        <span>${agentLabel(row.agent_type)}</span>
+      </div>
+      <div>${escapeHtml(row.summary.slice(0, 100))}${row.summary.length > 100 ? "..." : ""}</div>
+      <div class="review-actions">
+        <button data-report="${row.consultation_id}" class="small">查看报告</button>
+        ${actions && pending ? `
+        <button data-review="${row.review_id}" data-status="approved" class="small primary">通过</button>
+        <button data-review="${row.review_id}" data-status="needs_followup" class="small">需随访</button>
+        <button data-review="${row.review_id}" data-status="returned_for_info" class="small">退回补充</button>
+        <button data-review="${row.review_id}" data-status="rejected" class="small">拒绝</button>
+        <button data-escalate="${row.review_id}" class="small">升级复核</button>
+        ` : ""}
+      </div>
     </div>
   `;
-  showToast(error.message, "error");
 }
 
-async function loadReviews() {
-  try {
-    const rows = await request("/api/doctor/reviews");
-    els.reviewList.innerHTML = rows.length
-      ? rows
-          .map(
-            (row) => `
-              <div class="review-item ${row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : ""}">
-                <strong>复核 #${row.review_id} · 咨询 #${row.consultation_id}</strong>
-                <div class="review-meta">
-                  <span>状态: ${escapeHtml(row.status)}</span>
-                  <span class="risk-${row.risk_level}">${riskLabel(row.risk_level)}</span>
-                  <span>${agentLabel(row.agent_type)}</span>
-                </div>
-                <div>${escapeHtml(row.summary.slice(0, 100))}${row.summary.length > 100 ? "..." : ""}</div>
-                <button data-report="${row.consultation_id}" class="small">查看报告</button>
-                ${row.status === "pending" || row.status === "returned_for_info" || row.status === "escalated" ? `
-                <button data-review="${row.review_id}" data-status="approved" class="small primary">通过</button>
-                <button data-review="${row.review_id}" data-status="needs_followup" class="small">需随访</button>
-                <button data-review="${row.review_id}" data-status="returned_for_info" class="small">退回补充</button>
-                <button data-review="${row.review_id}" data-status="rejected" class="small">拒绝</button>
-                <button data-escalate="${row.review_id}" class="small">升级复核</button>
-                ` : ""}
-              </div>
-            `,
-          )
-          .join("")
-      : "<div class='review-item'>暂无待复核记录</div>";
+function bindRowActions(container, reportPanel) {
+  container.querySelectorAll("[data-review]").forEach((button) => {
+    button.addEventListener("click", () => openReviewModal(button.dataset.review, button.dataset.status));
+  });
+  container.querySelectorAll("[data-report]").forEach((button) => {
+    button.addEventListener("click", () => loadDoctorReport(button.dataset.report, reportPanel));
+  });
+  container.querySelectorAll("[data-escalate]").forEach((button) => {
+    button.addEventListener("click", () => confirmEscalate(button.dataset.escalate));
+  });
+}
 
-    els.reviewList.querySelectorAll("[data-review]").forEach((button) => {
-      button.addEventListener("click", () => openReviewModal(button.dataset.review, button.dataset.status));
-    });
-    els.reviewList.querySelectorAll("[data-report]").forEach((button) => {
-      button.addEventListener("click", () => loadDoctorReport(button.dataset.report));
-    });
-    els.reviewList.querySelectorAll("[data-escalate]").forEach((button) => {
-      button.addEventListener("click", () => escalateReview(button.dataset.escalate).catch(showError));
-    });
+async function loadReviews(force = false) {
+  showSkeleton(els.reviewList, 4);
+  try {
+    const rows = await fetchReviews(force);
+    const pending = rows.filter((r) => PENDING_STATES.includes(r.status));
+    els.reviewList.innerHTML = pending.length
+      ? pending.map((r) => reviewRow(r)).join("")
+      : "<div class='empty-state'><p>暂无待复核记录</p></div>";
+    bindRowActions(els.reviewList, els.reportPanel);
   } catch (error) {
-    els.reviewList.innerHTML = `<div class="review-item">加载失败: ${escapeHtml(error.message)}</div>`;
+    setError(els.reviewList, `加载失败: ${error.message}`, () => loadReviews(true));
   }
 }
 
-async function loadDoctorReport(consultationId) {
+async function loadHighRisk(force = false) {
+  showSkeleton(els.highRiskList, 4);
   try {
-    const data = await request(`/api/doctor/consultations/${consultationId}/report`);
-    let html = `
-      <div class="result-header">
-        <div class="result-title">
-          <h3>医生复核报告 #${escapeHtml(data.consultation.id)}</h3>
+    const rows = await fetchReviews(force);
+    const high = rows.filter((r) => r.risk_level === "high");
+    els.highRiskList.innerHTML = high.length
+      ? high.map((r) => reviewRow(r)).join("")
+      : "<div class='empty-state'><p>暂无高风险咨询</p></div>";
+    bindRowActions(els.highRiskList, els.highRiskReportPanel);
+  } catch (error) {
+    setError(els.highRiskList, `加载失败: ${error.message}`, () => loadHighRisk(true));
+  }
+}
+
+async function loadHistory(force = false) {
+  showSkeleton(els.historyList, 4);
+  try {
+    const rows = await fetchReviews(force);
+    const done = rows.filter((r) => !PENDING_STATES.includes(r.status));
+    els.historyList.innerHTML = done.length
+      ? done.map((r) => reviewRow(r, { actions: false })).join("")
+      : "<div class='empty-state'><p>暂无复核历史</p></div>";
+    bindRowActions(els.historyList, null);
+  } catch (error) {
+    setError(els.historyList, `加载失败: ${error.message}`, () => loadHistory(true));
+  }
+}
+
+async function loadDashboard() {
+  showSkeleton(els.dashboardBox, 4);
+  try {
+    const rows = await fetchReviews(true);
+    const pending = rows.filter((r) => PENDING_STATES.includes(r.status)).length;
+    const high = rows.filter((r) => r.risk_level === "high").length;
+    const done = rows.filter((r) => !PENDING_STATES.includes(r.status)).length;
+    els.dashboardBox.innerHTML = `
+      <div class="dashboard-card accent">
+        <span class="dash-label">待复核</span>
+        <span class="dash-value">${pending}</span>
+      </div>
+      <div class="dashboard-card risk-high">
+        <span class="dash-label">高风险</span>
+        <span class="dash-value">${high}</span>
+      </div>
+      <div class="dashboard-card">
+        <span class="dash-label">已处理</span>
+        <span class="dash-value">${done}</span>
+      </div>
+      <div class="dashboard-card">
+        <span class="dash-label">总计</span>
+        <span class="dash-value">${rows.length}</span>
+      </div>
+    `;
+  } catch (error) {
+    setError(els.dashboardBox, `加载失败: ${error.message}`, loadDashboard);
+  }
+}
+
+// ===== Three-column report =====
+async function loadDoctorReport(consultationId, panel) {
+  const target = panel || els.reportPanel;
+  target.innerHTML = '<div class="loading-spinner">正在加载报告...</div>';
+  try {
+    const raw = await request(`/api/doctor/consultations/${consultationId}/report`);
+    const d = normalizeDoctorReport(raw);
+    const c = d.consultation;
+
+    const patientCol = `
+      <div class="report-col patient-col">
+        <h3>患者信息</h3>
+        <div class="result-metrics compact">
+          <div class="metric-card"><span>智能体</span><strong>${agentLabel(c.agent_type)}</strong></div>
+          <div class="metric-card risk-${c.risk_level}"><span>风险</span><strong>${riskLabel(c.risk_level)}</strong></div>
+          <div class="metric-card"><span>状态</span><strong>${escapeHtml(c.status)}</strong></div>
+        </div>
+        <div class="result-section">
+          <h4>主诉/摘要</h4>
+          <p>${escapeHtml(c.summary || "")}</p>
         </div>
       </div>
-      <div class="result-metrics">
-        <div class="metric-card"><span>智能体</span><strong>${agentLabel(data.consultation.agent_type)}</strong></div>
-        <div class="metric-card risk-${data.consultation.risk_level}"><span>风险等级</span><strong>${riskLabel(data.consultation.risk_level)}</strong></div>
-        <div class="metric-card"><span>状态</span><strong>${escapeHtml(data.consultation.status)}</strong></div>
-      </div>
-      <div class="result-content">
-        <p>${escapeHtml(data.consultation.summary)}</p>
+    `;
+
+    let aiInner = renderStructuredData(d.structured, "doctor");
+    aiInner += renderObjectList("检索来源", d.retrievalHits, "title", "excerpt");
+    aiInner += `<div class="result-section"><h4>LLM 调用详情</h4>${renderLlmCalls(d.llmCalls, d.llmCall)}</div>`;
+    if (d.trace && d.trace.length) aiInner += renderTrace(d.trace);
+    const aiCol = `<div class="report-col ai-col"><h3>AI 结果与证据</h3>${aiInner}</div>`;
+
+    const reviewCol = `
+      <div class="report-col review-col">
+        <h3>复核操作</h3>
+        <p class="muted">从待复核队列对该咨询执行通过/退回/升级等操作。</p>
+        <div class="result-section">
+          <h4>免责声明</h4>
+          <p>${escapeHtml(d.disclaimer)}</p>
+        </div>
       </div>
     `;
-    html += renderStructuredData(data.structured_outputs, "doctor");
-    html += renderObjectList("检索来源", data.retrieval_hits, "title", "excerpt");
-    html += `
-      <div class="result-section">
-        <h4>LLM 调用详情</h4>
-        ${renderLlmCalls(data.llm_calls || [], data.llm_call)}
-      </div>
-    `;
-    if (data.agent_run) html += renderTrace(data.agent_run.trace);
-    html += `
-      <div class="result-section">
-        <h4>免责声明</h4>
-        <p>${escapeHtml(data.disclaimer)}</p>
-      </div>
-    `;
-    els.resultPanel.classList.remove("empty");
-    els.resultPanel.innerHTML = html;
+
+    target.innerHTML = `<div class="doctor-report">${patientCol}${aiCol}${reviewCol}</div>`;
     showToast("报告已加载");
   } catch (error) {
-    showError(error);
+    setError(target, `报告加载失败: ${error.message}`, () => loadDoctorReport(consultationId, panel));
   }
 }
 
+// ===== Review modal =====
 async function openReviewModal(reviewId, status) {
   currentReviewId = reviewId;
   currentReviewStatus = status;
@@ -194,7 +287,7 @@ async function openReviewModal(reviewId, status) {
   overlay.querySelector("#reviewTemplateSelect").addEventListener("change", (event) => {
     renderReviewTemplateFields(overlay, templates.find((item) => item.template_id === event.target.value));
   });
-  overlay.querySelector("#submitReviewBtn").addEventListener("click", () => submitReview().catch(showError));
+  overlay.querySelector("#submitReviewBtn").addEventListener("click", () => submitReview().catch((e) => showToast(e.message, "error")));
 }
 
 function renderReviewTemplateFields(overlay, template) {
@@ -247,24 +340,62 @@ async function submitReview() {
   });
   closeModal(overlay);
   currentModalOverlay = null;
-  els.resultPanel.innerHTML = '<div class="empty">请选择一个操作</div>';
-  await loadReviews();
+  await refreshAll();
   showToast("复核已提交");
 }
 
+// ===== Escalate with secondary confirm =====
+function confirmEscalate(reviewId) {
+  const { overlay } = openModal(`
+    <div class="modal-header">
+      <h3>升级为二级复核</h3>
+      <button class="modal-close" data-modal-close>&times;</button>
+    </div>
+    <div class="modal-body">
+      <p>确认将复核 #${escapeHtml(reviewId)} 升级为二级（管理员）复核？此操作会通知上级。</p>
+    </div>
+    <div class="modal-footer">
+      <button id="confirmEscalateBtn" class="primary">确认升级</button>
+      <button data-modal-close>取消</button>
+    </div>
+  `);
+  overlay.querySelector("#confirmEscalateBtn").addEventListener("click", async () => {
+    try {
+      await escalateReview(reviewId);
+      closeModal(overlay);
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+  });
+}
+
 async function escalateReview(reviewId) {
-  const data = await request(`/api/doctor/reviews/${reviewId}/escalate`, {
+  await request(`/api/doctor/reviews/${reviewId}/escalate`, {
     method: "POST",
     body: JSON.stringify({ reason: "医生发起二级复核", to_role: "admin" }),
   });
-  els.resultPanel.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-  await loadReviews();
+  await refreshAll();
   showToast("已升级为二级复核");
+}
+
+async function refreshAll() {
+  await fetchReviews(true);
+  await Promise.all([loadReviews(), loadHighRisk(), loadHistory(), loadDashboard()]);
+}
+
+function onSection(section) {
+  setPageTitle(SECTION_TITLES[section] || "");
+  if (section === "dashboard") loadDashboard();
+  else if (section === "reviews") loadReviews();
+  else if (section === "highRisk") loadHighRisk();
+  else if (section === "history") loadHistory();
 }
 
 function bindDoctorEvents() {
   els.logoutBtn.addEventListener("click", logout);
-  els.refreshReviewBtn.addEventListener("click", loadReviews);
+  els.refreshReviewBtn.addEventListener("click", () => loadReviews(true));
+  els.refreshHighRiskBtn.addEventListener("click", () => loadHighRisk(true));
+  els.refreshHistoryBtn.addEventListener("click", () => loadHistory(true));
 }
 
 async function initDoctorApp() {
@@ -274,7 +405,7 @@ async function initDoctorApp() {
   renderCurrentUser();
   flushPendingToast();
   bindDoctorEvents();
-  loadReviews();
+  initNav("dashboard", onSection);
 }
 
 initDoctorApp();
