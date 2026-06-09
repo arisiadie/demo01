@@ -38,9 +38,6 @@ def main() -> None:
     with conn.cursor() as cursor:
         for statement in [item.strip() for item in sql.split(";") if item.strip()]:
             cursor.execute(statement)
-        _ensure_user_auth_columns(cursor)
-        _ensure_patient_profile_fk(cursor)
-        _ensure_doctor_review_columns(cursor)
         _seed_knowledge_documents(cursor)
         _seed_medication_rules(cursor)
         _seed_treatment_options(cursor)
@@ -50,88 +47,6 @@ def main() -> None:
     _seed_workflow_config()
     conn.close()
     print(f"Initialized MySQL database: {DATABASE}")
-
-
-def _ensure_patient_profile_fk(cursor) -> None:
-    cursor.execute(
-        """
-        SELECT COUNT(1)
-        FROM information_schema.key_column_usage
-        WHERE table_schema = %s
-          AND table_name = 'patient_profiles'
-          AND constraint_name = 'fk_patient_profiles_user_external_id_users'
-        """,
-        (DATABASE,),
-    )
-    if cursor.fetchone()[0]:
-        return
-    cursor.execute(
-        """
-        ALTER TABLE patient_profiles
-        ADD CONSTRAINT fk_patient_profiles_user_external_id_users
-        FOREIGN KEY (user_external_id) REFERENCES users(external_id)
-        ON UPDATE CASCADE
-        ON DELETE CASCADE
-        """
-    )
-
-
-def _ensure_user_auth_columns(cursor) -> None:
-    cursor.execute(f"USE `{DATABASE}`")
-    _ensure_column(cursor, "users", "password_hash", "VARCHAR(255) NULL")
-    _ensure_column(cursor, "users", "active", "BOOL NOT NULL DEFAULT 1")
-    _ensure_column(cursor, "users", "last_login_at", "DATETIME NULL")
-    _ensure_index(cursor, "users", "ix_users_active", "active")
-
-
-def _ensure_doctor_review_columns(cursor) -> None:
-    cursor.execute(f"USE `{DATABASE}`")
-    columns = {
-        "review_template": "VARCHAR(80) NULL",
-        "structured_opinion_json": "TEXT NOT NULL",
-        "risk_assessment": "TEXT NULL",
-        "treatment_decision": "VARCHAR(80) NULL",
-        "signature": "VARCHAR(80) NULL",
-        "signature_title": "VARCHAR(120) NULL",
-        "due_by": "DATETIME NULL",
-        "review_round": "INT NOT NULL DEFAULT 1",
-        "followup_needed": "BOOL NOT NULL DEFAULT 0",
-        "followup_instruction": "TEXT NULL",
-        "escalation_note": "TEXT NULL",
-        "closed_at": "DATETIME NULL",
-    }
-    for column, ddl in columns.items():
-        _ensure_column(cursor, "doctor_reviews", column, ddl)
-    _ensure_index(cursor, "doctor_reviews", "ix_doctor_reviews_due_by", "due_by")
-    _ensure_index(cursor, "doctor_reviews", "ix_doctor_reviews_review_round", "review_round")
-
-
-def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
-    cursor.execute(
-        """
-        SELECT COUNT(1)
-        FROM information_schema.columns
-        WHERE table_schema = %s AND table_name = %s AND column_name = %s
-        """,
-        (DATABASE, table, column),
-    )
-    if cursor.fetchone()[0]:
-        return
-    cursor.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}")
-
-
-def _ensure_index(cursor, table: str, index_name: str, column: str) -> None:
-    cursor.execute(
-        """
-        SELECT COUNT(1)
-        FROM information_schema.statistics
-        WHERE table_schema = %s AND table_name = %s AND index_name = %s
-        """,
-        (DATABASE, table, index_name),
-    )
-    if cursor.fetchone()[0]:
-        return
-    cursor.execute(f"ALTER TABLE `{table}` ADD KEY `{index_name}` (`{column}`)")
 
 
 def _seed_knowledge_documents(cursor) -> None:

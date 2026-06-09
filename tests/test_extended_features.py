@@ -688,33 +688,29 @@ def test_phase7_agent_quality_case_tracks_workflow_sources_and_contract():
 
 
 def test_sql_schema_tracks_orm_tables_and_review_columns():
-    import re
     from pathlib import Path
 
+    from scripts.check_schema_alignment import sql_table_columns
+
     sql = Path("sql/init_oralcare_agentic_rag.sql").read_text(encoding="utf-8")
-    create_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS `([^`]+)`", sql))
-    model_tables = {table.name for table in Base.metadata.sorted_tables}
+    sql_tables = sql_table_columns(sql)
+    orm_tables = {
+        table.name: {column.name for column in table.columns}
+        for table in Base.metadata.sorted_tables
+    }
 
-    assert sorted(model_tables - create_tables) == []
+    # Every ORM table must exist in the SQL init script.
+    assert sorted(set(orm_tables) - set(sql_tables)) == []
 
-    section = re.search(r"CREATE TABLE IF NOT EXISTS `doctor_reviews` \((.*?)\) ENGINE=", sql, flags=re.S)
-    assert section is not None
-    sql_columns = set(re.findall(r"^\s*`([^`]+)`\s+", section.group(1), flags=re.M))
-    for column in {
-        "review_template",
-        "structured_opinion_json",
-        "risk_assessment",
-        "treatment_decision",
-        "signature",
-        "signature_title",
-        "due_by",
-        "review_round",
-        "followup_needed",
-        "followup_instruction",
-        "escalation_note",
-        "closed_at",
-    }:
-        assert column in sql_columns
+    # Column-level alignment for ALL tables: the SQL init script is the deploy-time
+    # source of truth and must not drift from the ORM (entities.py). This guards
+    # against the historical pattern of patching missing columns at runtime.
+    drift = {}
+    for table, orm_cols in orm_tables.items():
+        missing = orm_cols - sql_tables.get(table, set())
+        if missing:
+            drift[table] = sorted(missing)
+    assert drift == {}, f"ORM columns missing from SQL init script: {drift}"
 
 
 def test_workflow_persistence_roundtrip_loads_into_orchestrator():
