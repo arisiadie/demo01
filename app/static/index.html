@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>口腔医疗 Agentic RAG 多智能体平台</title>
+    <title>登录 · 口腔医疗 Agentic RAG 多智能体平台</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
-    <header class="topbar">
+  <body class="login-page">
+    <main class="login-shell">
       <div class="brand">
         <div class="brand-icon">🦷</div>
         <div class="brand-text">
@@ -15,166 +15,27 @@
           <p>AI辅助参考，不替代执业医师诊断</p>
         </div>
       </div>
-      <div class="login-box">
-        <input id="loginUserInput" value="patient-demo" aria-label="账号" placeholder="账号" />
-        <input id="loginPasswordInput" type="password" value="patient123" aria-label="密码" placeholder="密码" />
-        <button id="loginBtn">登录</button>
-        <button id="logoutBtn">退出</button>
-        <span id="currentUserText">未登录</span>
-      </div>
-      <div class="role-switcher" aria-label="角色切换">
-        <button class="role active" data-role="patient">患者</button>
-        <button class="role" data-role="doctor">医生</button>
-        <button class="role" data-role="admin">管理员</button>
-      </div>
-    </header>
 
-    <main class="layout">
-      <aside class="sidebar">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>演示场景</h2>
-          </div>
-          <div class="panel-body">
-            <div id="scenarioList" class="scenario-list"></div>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-header">
-            <h2>患者资料</h2>
-          </div>
-          <div class="panel-body">
-            <label>姓名 <input id="profileNameInput" placeholder="患者姓名/昵称" /></label>
-            <label>年龄 <input id="ageInput" type="number" min="0" max="120" value="32" /></label>
-            <label>性别 <input id="sexInput" placeholder="男 / 女 / 其他" /></label>
-            <label>妊娠状态 <input id="pregnancyInput" placeholder="无 / 备孕 / 妊娠中" /></label>
-            <label>过敏史 <input id="allergyInput" placeholder="如：青霉素过敏" /></label>
-            <label>基础病 <input id="conditionInput" placeholder="如：糖尿病、心脏病" /></label>
-            <label>口腔病史 <textarea id="oralHistoryInput" rows="2" placeholder="如：牙周治疗史、正畸、种植、龋病高风险"></textarea></label>
-            <button id="saveProfileBtn" class="primary">保存资料</button>
-          </div>
-        </section>
-        <section class="panel patient-only hidden">
-          <div class="panel-header">
-            <h2>健康档案</h2>
-            <button id="loadCareBtn">刷新</button>
-          </div>
-          <div class="panel-body">
-            <input id="recordTreatmentInput" placeholder="治疗名称，如：根管治疗" />
-            <input id="recordDiagnosisInput" placeholder="诊断/记录摘要" />
-            <input id="recordNextVisitInput" type="datetime-local" />
-            <button id="addRecordBtn">新增治疗记录</button>
-            <textarea id="reminderNoteInput" rows="2" placeholder="复诊或护理提醒"></textarea>
-            <button id="addReminderBtn">新增提醒</button>
-            <input id="toothPositionInput" placeholder="牙位，如：右下6 / 46" />
-            <input id="toothStatusInput" placeholder="牙位状态，如：根管后观察" />
-            <input id="toothCycleInput" type="number" min="30" max="720" value="180" aria-label="维护周期天数" />
-            <button id="addToothRecordBtn">保存牙位档案</button>
-            <button id="loadToothChartBtn">牙位图</button>
-            <button id="loadMaintenanceBtn">维护计划</button>
-            <button id="loadEducationFeedBtn">科普推送</button>
-            <button id="pushEducationFeedBtn">生成站内科普</button>
-            <button id="runDueNotificationsBtn">到期提醒</button>
-            <button id="signConsentBtn">签署AI同意</button>
-            <button id="loadConsentsBtn">同意记录</button>
-            <button id="requestExportBtn">申请导出</button>
-            <button id="requestDeleteBtn">申请删除</button>
-            <button id="loadPatientDataRequestsBtn">申请记录</button>
-            <div id="careBox" class="history-list"></div>
-          </div>
-        </section>
-      </aside>
+      <form id="loginForm" class="login-card">
+        <h2>登录</h2>
+        <label>账号 <input id="loginUserInput" value="patient-demo" autocomplete="username" placeholder="账号" /></label>
+        <label>密码 <input id="loginPasswordInput" type="password" value="patient123" autocomplete="current-password" placeholder="密码" /></label>
+        <button type="submit" class="primary">登录</button>
+        <p id="loginError" class="login-error" hidden></p>
 
-      <section class="workspace">
-        <section class="consult-card">
-          <div class="consult-card-header">
-            <div>
-              <h2>智能服务入口</h2>
-              <p>输入症状、方案、用药、影像报告或健康管理问题</p>
-            </div>
-            <select id="agentSelect" aria-label="智能体选择">
-              <option value="">自动路由</option>
-              <option value="triage">症状预问诊</option>
-              <option value="treatment">方案解读</option>
-              <option value="medication">用药审查</option>
-              <option value="imaging">影像报告解读</option>
-              <option value="health">健康管理</option>
-            </select>
-          </div>
-          <textarea id="messageInput" rows="6" placeholder="例如：右下后牙夜间疼痛，冷热刺激痛 3 天，想知道需要看什么科。"></textarea>
-          <div class="consult-actions">
-            <button id="sendBtn" class="primary">提交咨询</button>
-            <button id="clearBtn">清空</button>
-          </div>
-        </section>
+        <div class="demo-logins">
+          <span>演示账号：</span>
+          <button type="button" data-demo-login="patient">患者</button>
+          <button type="button" data-demo-login="doctor">医生</button>
+          <button type="button" data-demo-login="admin">管理员</button>
+        </div>
+      </form>
 
-        <section class="consult-card imaging-card">
-          <div>
-            <h2>影像报告文本解读</h2>
-            <p>图片仅上传预览/归档，不做真实图像诊断</p>
-          </div>
-          <textarea id="reportInput" rows="3" placeholder="粘贴全景片、根尖片或 CBCT 报告文本"></textarea>
-          <input id="imageInput" type="file" accept="image/*,.pdf" />
-          <button id="imagingBtn">上传并解读报告文本</button>
-        </section>
-
-        <section id="resultPanel" class="result-panel empty">
-          <p>请输入口腔健康问题，AI 将为您提供专业的辅助参考</p>
-        </section>
-      </section>
-
-      <aside class="rightbar">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>历史记录</h2>
-            <button id="refreshHistoryBtn">刷新</button>
-          </div>
-          <div id="historyList" class="history-list"></div>
-        </section>
-        <section class="panel doctor-only hidden">
-          <div class="panel-header">
-            <h2>医生复核</h2>
-            <button id="refreshReviewBtn">刷新</button>
-          </div>
-          <div id="reviewList" class="review-list"></div>
-        </section>
-        <section class="panel admin-only hidden">
-          <div class="panel-header">
-            <h2>系统管理</h2>
-          </div>
-          <div class="admin-actions">
-            <button id="ragEvalBtn">RAG 评测</button>
-            <button id="llmMetricsBtn">LLM 指标</button>
-            <button id="adminAlertsBtn">异常告警</button>
-            <button id="rebuildChromaBtn">重建向量库</button>
-            <button id="adminRunDueBtn">扫描提醒</button>
-            <button id="loadKnowledgeDocsBtn">文档管理</button>
-            <button id="loadKnowledgeChangesBtn">变更记录</button>
-            <button id="loadWorkflowBtn">工作流配置</button>
-            <button id="saveWorkflowBtn">保存工作流</button>
-            <button id="loadConsultationTraceBtn">咨询追踪</button>
-            <button id="loadDataRequestsBtn">数据请求</button>
-            <button id="loadAuditBtn">审计日志</button>
-            <button id="loadPrivacyBtn">隐私合规</button>
-          </div>
-          <div class="knowledge-form">
-            <input id="knowledgeTitleInput" placeholder="文档标题" />
-            <input id="knowledgeCategoryInput" placeholder="分类，如：health" />
-            <input id="knowledgeSourceInput" placeholder="来源" />
-            <textarea id="knowledgeContentInput" rows="3" placeholder="知识内容"></textarea>
-            <button id="createKnowledgeDocBtn" class="primary">新增文档</button>
-          </div>
-          <textarea id="workflowJsonInput" rows="8" placeholder="工作流 JSON：包含 nodes 和 edges，用于管理员保存动态多智能体图"></textarea>
-          <div id="knowledgeBox" class="admin-panel">等待操作...</div>
-        </section>
-      </aside>
+      <footer class="footer">
+        <span>内测安全边界：不自动诊断、不自动处方、不做真实影像识别</span>
+      </footer>
     </main>
 
-    <footer class="footer">
-      <span>内测安全边界：不自动诊断、不自动处方、不做真实影像识别</span>
-      <span class="status" id="statusText">就绪</span>
-    </footer>
-
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/js/login.js"></script>
   </body>
 </html>

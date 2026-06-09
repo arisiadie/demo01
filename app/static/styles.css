@@ -1216,3 +1216,72 @@ textarea {
     margin: 16px;
   }
 }
+
+/* ===== Round 1 additive: login page + per-page shell (kept until R2 CSS split) ===== */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-shell {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.login-shell .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+}
+.login-card {
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-color, #dbe3ea);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+}
+.login-card h2 {
+  margin: 0 0 4px;
+}
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.login-error {
+  color: var(--danger, #b91c1c);
+  font-size: 13px;
+  margin: 0;
+}
+.demo-logins {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border-color, #dbe3ea);
+  padding-top: 12px;
+}
+.demo-logins span {
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+}
+
+/* Per-page workspace shell reuses existing .topbar/.layout/.sidebar/.workspace/.rightbar.
+   Topbar identity block on role pages. */
+.topbar .session-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.topbar .session-box span {
+  font-size: 13px;
+}
