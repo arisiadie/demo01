@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>管理员端 · 口腔医疗智能助手</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">🛠️</div>
+        <div class="brand-text">
+          <h1>系统治理控制台</h1>
+          <p>RAG / Workflow / LLM / 审计 / 隐私 可观测与可治理</p>
+        </div>
+      </div>
+      <div class="session-box">
+        <span id="currentUserText">未登录</span>
+        <button id="logoutBtn">退出</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>系统管理</h2>
+          </div>
+          <div class="admin-actions">
+            <button id="ragEvalBtn">RAG 评测</button>
+            <button id="llmMetricsBtn">LLM 指标</button>
+            <button id="adminAlertsBtn">异常告警</button>
+            <button id="rebuildChromaBtn">重建向量库</button>
+            <button id="adminRunDueBtn">扫描提醒</button>
+            <button id="loadKnowledgeDocsBtn">文档管理</button>
+            <button id="loadKnowledgeChangesBtn">变更记录</button>
+            <button id="loadWorkflowBtn">工作流配置</button>
+            <button id="saveWorkflowBtn">保存工作流</button>
+            <button id="loadConsultationTraceBtn">咨询追踪</button>
+            <button id="loadDataRequestsBtn">数据请求</button>
+            <button id="loadAuditBtn">审计日志</button>
+            <button id="loadPrivacyBtn">隐私合规</button>
+          </div>
+          <div class="knowledge-form">
+            <input id="knowledgeTitleInput" placeholder="文档标题" />
+            <input id="knowledgeCategoryInput" placeholder="分类，如：health" />
+            <input id="knowledgeSourceInput" placeholder="来源" />
+            <textarea id="knowledgeContentInput" rows="3" placeholder="知识内容"></textarea>
+            <button id="createKnowledgeDocBtn" class="primary">新增文档</button>
+          </div>
+          <textarea id="workflowJsonInput" rows="8" placeholder="工作流 JSON：包含 nodes 和 edges，用于管理员保存动态多智能体图"></textarea>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div id="knowledgeBox" class="admin-panel">等待操作...</div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>内测安全边界：不自动诊断、不自动处方、不做真实影像识别</span>
+      <span class="status" id="statusText">就绪</span>
+    </footer>
+
+    <script type="module" src="/static/js/admin.js"></script>
+  </body>
+</html>
