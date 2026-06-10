@@ -310,8 +310,35 @@ async function pushEducationFeed() {
 
 async function runDueNotifications() {
   const data = await request("/api/patient/notifications/due", { method: "POST" });
-  els.careBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-  showToast("到期提醒已扫描");
+  els.careBox.innerHTML = renderDueNotifications(data);
+  const count = data.created_count || 0;
+  showToast(count ? `扫描到 ${count} 条到期提醒` : "暂无到期提醒");
+}
+
+function renderDueNotifications(data) {
+  const items = data.notifications || [];
+  if (!items.length) {
+    return `
+      <div class="care-card">
+        <h3>到期提醒扫描</h3>
+        <div class="empty-state"><p>当前没有到期的复诊或维护提醒</p></div>
+      </div>
+    `;
+  }
+  return `
+    <div class="care-card">
+      <h3>到期提醒（${items.length}）</h3>
+      <div class="care-grid">
+        ${items.map((item) => `
+          <div class="care-item">
+            <strong>${escapeHtml(item.title)}</strong>
+            ${item.content ? `<p>${escapeHtml(item.content)}</p>` : ""}
+            <span>${escapeHtml(item.status)}${item.created_at ? ` · ${formatDate(item.created_at)}` : ""}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
 }
 
 async function signConsent() {
@@ -326,7 +353,16 @@ async function signConsent() {
       signature: user?.display_name || "patient-demo",
     }),
   });
-  els.privacyBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  els.privacyBox.innerHTML = `
+    <div class="care-card">
+      <h3>AI 知情同意已签署</h3>
+      <div class="care-item risk-border-low">
+        <strong>${escapeHtml(data.consent_type || "ai_medical_assist")} · ${escapeHtml(data.consent_version || "v1.0")}</strong>
+        ${data.scope ? `<p>${escapeHtml(data.scope)}</p>` : ""}
+        <span>签署人：${escapeHtml(data.signature || user?.display_name || "patient-demo")}${data.signed_at ? ` · ${formatDate(data.signed_at)}` : ""}</span>
+      </div>
+    </div>
+  `;
   showToast("同意记录已签署");
 }
 
@@ -345,7 +381,18 @@ async function createDataRequest(type) {
       reason: type === "export" ? "患者申请导出内测数据" : "患者申请删除内测数据",
     }),
   });
-  els.privacyBox.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  const label = type === "export" ? "数据导出" : "数据删除";
+  els.privacyBox.innerHTML = `
+    <div class="care-card">
+      <h3>${label}申请已提交</h3>
+      <div class="care-item risk-border-medium">
+        <strong>申请 #${escapeHtml(data.id ?? "-")} · ${escapeHtml(dataRequestStatusLabel(data.status || "pending"))}</strong>
+        ${data.data_scope ? `<p>范围：${escapeHtml(data.data_scope)}</p>` : ""}
+        <span>${escapeHtml(data.reason || "")}${data.created_at ? ` · ${formatDate(data.created_at)}` : ""}</span>
+      </div>
+      <p class="muted">管理员审批后可在「申请记录」中查看处理结果。</p>
+    </div>
+  `;
   showToast(type === "export" ? "导出申请已提交" : "删除申请已提交");
 }
 
