@@ -15,6 +15,8 @@ import {
   setPageTitle,
   showSkeleton,
   setError,
+  openDrawer,
+  closeDrawer,
 } from "./shared/view.js";
 import { navigate } from "./shared/router.js";
 import { runLatest } from "./shared/tasks.js";
@@ -37,8 +39,8 @@ let currentModalOverlay = null;
 function cacheEls() {
   [
     "currentUserText", "logoutBtn", "dashboardBox",
-    "reviewList", "refreshReviewBtn", "reportPanel",
-    "highRiskList", "refreshHighRiskBtn", "highRiskReportPanel",
+    "reviewList", "refreshReviewBtn",
+    "highRiskList", "refreshHighRiskBtn",
     "historyList", "refreshHistoryBtn",
   ].forEach((id) => { els[id] = document.querySelector(`#${id}`); });
 }
@@ -89,7 +91,7 @@ function reviewRow(row, { actions = true } = {}) {
   `;
 }
 
-function bindRowActions(container, reportPanel, section) {
+function bindRowActions(container, section) {
   container.querySelectorAll("[data-review]").forEach((button) => {
     button.addEventListener("click", () => openReviewModal(button.dataset.review, button.dataset.status));
   });
@@ -109,8 +111,8 @@ async function loadReviews(force = false, reportId = null) {
     els.reviewList.innerHTML = pending.length
       ? pending.map((r) => reviewRow(r)).join("")
       : "<div class='empty-state'><p>暂无待复核记录</p></div>";
-    bindRowActions(els.reviewList, els.reportPanel, "reviews");
-    if (reportId) loadDoctorReport(reportId, els.reportPanel);
+    bindRowActions(els.reviewList, "reviews");
+    if (reportId) loadDoctorReport(reportId);
   } catch (error) {
     setError(els.reviewList, `加载失败: ${error.message}`, () => loadReviews(true));
   }
@@ -124,8 +126,8 @@ async function loadHighRisk(force = false, reportId = null) {
     els.highRiskList.innerHTML = high.length
       ? high.map((r) => reviewRow(r)).join("")
       : "<div class='empty-state'><p>暂无高风险咨询</p></div>";
-    bindRowActions(els.highRiskList, els.highRiskReportPanel, "highRisk");
-    if (reportId) loadDoctorReport(reportId, els.highRiskReportPanel);
+    bindRowActions(els.highRiskList, "highRisk");
+    if (reportId) loadDoctorReport(reportId);
   } catch (error) {
     setError(els.highRiskList, `加载失败: ${error.message}`, () => loadHighRisk(true));
   }
@@ -139,7 +141,7 @@ async function loadHistory(force = false) {
     els.historyList.innerHTML = done.length
       ? done.map((r) => reviewRow(r, { actions: false })).join("")
       : "<div class='empty-state'><p>暂无复核历史</p></div>";
-    bindRowActions(els.historyList, null, "history");
+    bindRowActions(els.historyList, "history");
   } catch (error) {
     setError(els.historyList, `加载失败: ${error.message}`, () => loadHistory(true));
   }
@@ -175,10 +177,9 @@ async function loadDashboard() {
   }
 }
 
-// ===== Three-column report =====
-async function loadDoctorReport(consultationId, panel) {
-  const target = panel || els.reportPanel;
-  target.innerHTML = '<div class="loading-spinner">正在加载报告...</div>';
+// ===== Report detail (right-side drawer, single column) =====
+async function loadDoctorReport(consultationId) {
+  openDrawer(`复核报告 · 咨询 #${consultationId}`, '<div class="loading-spinner">正在加载报告...</div>');
   try {
     // runLatest: clicking several reports quickly only renders the last one,
     // so a slow earlier response can't overwrite the newer selection.
@@ -188,43 +189,76 @@ async function loadDoctorReport(consultationId, panel) {
     if (raw === undefined) return; // superseded by a newer click
     const d = normalizeDoctorReport(raw);
     const c = d.consultation;
+    // Find the matching review row (for review_id + status) from the cache.
+    const review = allReviews.find((r) => String(r.consultation_id) === String(consultationId));
+    const pending = review && PENDING_STATES.includes(review.status);
 
-    const patientCol = `
-      <div class="report-col patient-col">
-        <h3>患者信息</h3>
-        <div class="result-metrics compact">
-          <div class="metric-card"><span>智能体</span><strong>${agentLabel(c.agent_type)}</strong></div>
-          <div class="metric-card risk-${c.risk_level}"><span>风险</span><strong>${riskLabel(c.risk_level)}</strong></div>
-          <div class="metric-card"><span>状态</span><strong>${escapeHtml(c.status)}</strong></div>
-        </div>
+    let html = `
+      <div class="report-detail">
         <div class="result-section">
-          <h4>主诉/摘要</h4>
+          <h4>患者信息</h4>
+          <div class="result-metrics compact">
+            <div class="metric-card"><span>智能体</span><strong>${agentLabel(c.agent_type)}</strong></div>
+            <div class="metric-card risk-${c.risk_level}"><span>风险</span><strong>${riskLabel(c.risk_level)}</strong></div>
+            <div class="metric-card"><span>状态</span><strong>${escapeHtml(c.status)}</strong></div>
+          </div>
           <p>${escapeHtml(c.summary || "")}</p>
         </div>
-      </div>
-    `;
-
-    let aiInner = renderStructuredData(d.structured, "doctor");
-    aiInner += renderObjectList("检索来源", d.retrievalHits, "title", "excerpt");
-    aiInner += `<div class="result-section"><h4>LLM 调用详情</h4>${renderLlmCalls(d.llmCalls, d.llmCall)}</div>`;
-    if (d.trace && d.trace.length) aiInner += renderTrace(d.trace);
-    const aiCol = `<div class="report-col ai-col"><h3>AI 结果与证据</h3>${aiInner}</div>`;
-
-    const reviewCol = `
-      <div class="report-col review-col">
-        <h3>复核操作</h3>
-        <p class="muted">从待复核队列对该咨询执行通过/退回/升级等操作。</p>
+        <div class="result-section">
+          <h4>AI 结果与证据</h4>
+          ${renderStructuredData(d.structured, "doctor")}
+        </div>
+        ${d.retrievalHits && d.retrievalHits.length ? `
+        <details class="report-fold">
+          <summary>检索来源（${d.retrievalHits.length}）</summary>
+          ${renderObjectList("", d.retrievalHits, "title", "excerpt")}
+        </details>` : ""}
+        <details class="report-fold">
+          <summary>模型调用详情</summary>
+          ${renderLlmCalls(d.llmCalls, d.llmCall)}
+        </details>
+        ${d.trace && d.trace.length ? `
+        <details class="report-fold">
+          <summary>执行轨迹</summary>
+          ${renderTrace(d.trace)}
+        </details>` : ""}
         <div class="result-section">
           <h4>免责声明</h4>
           <p>${escapeHtml(d.disclaimer)}</p>
         </div>
-      </div>
     `;
 
-    target.innerHTML = `<div class="doctor-report">${patientCol}${aiCol}${reviewCol}</div>`;
-    showToast("报告已加载");
+    if (pending) {
+      html += `
+        <div class="result-section">
+          <h4>复核操作</h4>
+          <div class="report-actions">
+            <button data-review="${review.review_id}" data-status="approved" class="small primary">通过</button>
+            <button data-review="${review.review_id}" data-status="needs_followup" class="small">需随访</button>
+            <button data-review="${review.review_id}" data-status="returned_for_info" class="small">退回补充</button>
+            <button data-review="${review.review_id}" data-status="rejected" class="small">拒绝</button>
+            <button data-escalate="${review.review_id}" class="small">升级复核</button>
+          </div>
+        </div>
+      `;
+    } else if (review) {
+      html += `<div class="result-section"><h4>复核操作</h4><p class="muted">该复核已处理（状态：${escapeHtml(review.status)}），不可再操作。</p></div>`;
+    }
+    html += `</div>`;
+
+    openDrawer(`复核报告 · 咨询 #${consultationId}`, html);
+
+    // Bind action buttons inside the drawer (modal stacks above it).
+    const drawer = document.querySelector("#appDrawer");
+    drawer?.querySelectorAll("[data-review]").forEach((button) => {
+      button.addEventListener("click", () => openReviewModal(button.dataset.review, button.dataset.status));
+    });
+    drawer?.querySelectorAll("[data-escalate]").forEach((button) => {
+      button.addEventListener("click", () => confirmEscalate(button.dataset.escalate));
+    });
   } catch (error) {
-    setError(target, `报告加载失败: ${error.message}`, () => loadDoctorReport(consultationId, panel));
+    openDrawer(`复核报告 · 咨询 #${consultationId}`,
+      `<div class="error-state"><p>报告加载失败：${escapeHtml(error.message)}</p></div>`);
   }
 }
 
@@ -358,6 +392,7 @@ async function submitReview() {
   });
   closeModal(overlay);
   currentModalOverlay = null;
+  closeDrawer();
   await refreshAll();
   showToast("复核已提交");
 }
@@ -392,6 +427,7 @@ async function escalateReview(reviewId) {
     method: "POST",
     body: JSON.stringify({ reason: "医生发起二级复核", to_role: "admin" }),
   });
+  closeDrawer();
   await refreshAll();
   showToast("已升级为二级复核");
 }

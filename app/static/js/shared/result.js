@@ -164,7 +164,7 @@ export function renderObjectList(title, items, titleKey, bodyKey) {
   if (!items || !items.length) return "";
   return `
     <div class="result-section">
-      <h4>${title}</h4>
+      ${title ? `<h4>${title}</h4>` : ""}
       <div class="source-list">
         ${items
           .map(

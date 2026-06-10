@@ -87,6 +87,10 @@ export function openDrawer(title, innerHtml) {
   drawer.querySelector("#drawerCloseBtn").addEventListener("click", closeDrawer);
   drawer.hidden = false;
   backdrop.hidden = false;
+  // Release any handlers from a previous openDrawer call (e.g. loading→content
+  // re-render) before re-binding, so Esc/focus-trap don't stack.
+  drawerReleaseTrap();
+  drawerReleaseEsc();
   drawerReleaseTrap = trapFocus(drawer);
   drawerReleaseEsc = bindEscapeClose(drawer, closeDrawer);
 }

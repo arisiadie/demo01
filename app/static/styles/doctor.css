@@ -1,54 +1,65 @@
-/* ===== Doctor: three-column report layout ===== */
-.doctor-report {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr 1fr;
-  gap: 16px;
-  align-items: start;
+/* ===== Doctor: report detail (right drawer, single column) ===== */
+/* doctor.css only loads on doctor.html, so widening the shared drawer here
+   affects the doctor page only — report content needs more room than 420px. */
+.app-drawer {
+  width: 560px;
 }
 
-.report-col {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 18px;
+.report-detail {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-width: 0;
+  gap: 16px;
 }
 
-.report-col > h3 {
-  margin: 0;
+/* Long JSON / model-call previews must wrap inside the drawer, not overflow. */
+.report-detail pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Avoid metric grids collapsing into a cramped multi-row mess in the drawer. */
+.report-detail .result-metrics.compact {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.report-fold {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+  background: var(--bg-secondary);
+}
+
+.report-fold > summary {
+  cursor: pointer;
+  padding: 12px 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-light);
+  list-style: none;
+}
+
+.report-fold > summary::-webkit-details-marker { display: none; }
+
+.report-fold > summary::before {
+  content: "\25B8";
+  color: var(--brand-primary);
+  margin-right: 6px;
+  transition: transform var(--transition-fast);
+  display: inline-block;
+}
+
+.report-fold[open] > summary::before { transform: rotate(90deg); }
+
+.report-actions {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.report-col.patient-col > h3::before { content: "\1F464"; }
-.report-col.ai-col > h3::before { content: "\1F9E0"; }
-.report-col.review-col > h3::before { content: "\1F4DD"; }
-
-.report-col label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-secondary);
+.report-actions button {
+  flex: 1 1 auto;
+  min-width: 96px;
 }
-
-@media (max-width: 1100px) {
-  .doctor-report {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ===== Doctor: review queue ===== */
 .review-item.high-risk {
   border-left-width: 4px;
   border-left-color: var(--danger);
