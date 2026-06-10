@@ -1898,7 +1898,17 @@ async def _read_imaging_request(request: Request) -> tuple[str, UploadFile | Non
 
     report_text = str(form.get("report_text") or "")
     image_value = form.get("image")
-    image = image_value if isinstance(image_value, UploadFile) else None
+    # Duck-type the upload: Starlette parses files into starlette.UploadFile,
+    # which is NOT always identical to the imported fastapi.UploadFile across
+    # version combos, so isinstance() can wrongly return False and silently drop
+    # the image. Accept any uploaded file that exposes filename + read().
+    is_upload = (
+        image_value is not None
+        and hasattr(image_value, "filename")
+        and hasattr(image_value, "read")
+        and bool(getattr(image_value, "filename", ""))
+    )
+    image = image_value if is_upload else None
     return report_text, image
 
 
