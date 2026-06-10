@@ -16,6 +16,9 @@ import {
   showSkeleton,
   setError,
 } from "./shared/view.js";
+import { navigate } from "./shared/router.js";
+import { runLatest } from "./shared/tasks.js";
+import { validateReviewPayload } from "./shared/validators.js";
 
 const SECTION_TITLES = {
   dashboard: "首页概览",
@@ -85,19 +88,19 @@ function reviewRow(row, { actions = true } = {}) {
   `;
 }
 
-function bindRowActions(container, reportPanel) {
+function bindRowActions(container, reportPanel, section) {
   container.querySelectorAll("[data-review]").forEach((button) => {
     button.addEventListener("click", () => openReviewModal(button.dataset.review, button.dataset.status));
   });
   container.querySelectorAll("[data-report]").forEach((button) => {
-    button.addEventListener("click", () => loadDoctorReport(button.dataset.report, reportPanel));
+    button.addEventListener("click", () => navigate(section, { report: button.dataset.report }));
   });
   container.querySelectorAll("[data-escalate]").forEach((button) => {
     button.addEventListener("click", () => confirmEscalate(button.dataset.escalate));
   });
 }
 
-async function loadReviews(force = false) {
+async function loadReviews(force = false, reportId = null) {
   showSkeleton(els.reviewList, 4);
   try {
     const rows = await fetchReviews(force);
@@ -105,13 +108,14 @@ async function loadReviews(force = false) {
     els.reviewList.innerHTML = pending.length
       ? pending.map((r) => reviewRow(r)).join("")
       : "<div class='empty-state'><p>暂无待复核记录</p></div>";
-    bindRowActions(els.reviewList, els.reportPanel);
+    bindRowActions(els.reviewList, els.reportPanel, "reviews");
+    if (reportId) loadDoctorReport(reportId, els.reportPanel);
   } catch (error) {
     setError(els.reviewList, `加载失败: ${error.message}`, () => loadReviews(true));
   }
 }
 
-async function loadHighRisk(force = false) {
+async function loadHighRisk(force = false, reportId = null) {
   showSkeleton(els.highRiskList, 4);
   try {
     const rows = await fetchReviews(force);
@@ -119,7 +123,8 @@ async function loadHighRisk(force = false) {
     els.highRiskList.innerHTML = high.length
       ? high.map((r) => reviewRow(r)).join("")
       : "<div class='empty-state'><p>暂无高风险咨询</p></div>";
-    bindRowActions(els.highRiskList, els.highRiskReportPanel);
+    bindRowActions(els.highRiskList, els.highRiskReportPanel, "highRisk");
+    if (reportId) loadDoctorReport(reportId, els.highRiskReportPanel);
   } catch (error) {
     setError(els.highRiskList, `加载失败: ${error.message}`, () => loadHighRisk(true));
   }
@@ -133,7 +138,7 @@ async function loadHistory(force = false) {
     els.historyList.innerHTML = done.length
       ? done.map((r) => reviewRow(r, { actions: false })).join("")
       : "<div class='empty-state'><p>暂无复核历史</p></div>";
-    bindRowActions(els.historyList, null);
+    bindRowActions(els.historyList, null, "history");
   } catch (error) {
     setError(els.historyList, `加载失败: ${error.message}`, () => loadHistory(true));
   }
@@ -174,7 +179,12 @@ async function loadDoctorReport(consultationId, panel) {
   const target = panel || els.reportPanel;
   target.innerHTML = '<div class="loading-spinner">正在加载报告...</div>';
   try {
-    const raw = await request(`/api/doctor/consultations/${consultationId}/report`);
+    // runLatest: clicking several reports quickly only renders the last one,
+    // so a slow earlier response can't overwrite the newer selection.
+    const raw = await runLatest("doctor-report", () =>
+      request(`/api/doctor/consultations/${consultationId}/report`),
+    );
+    if (raw === undefined) return; // superseded by a newer click
     const d = normalizeDoctorReport(raw);
     const c = d.consultation;
 
@@ -334,6 +344,11 @@ async function submitReview() {
     note: overlay.querySelector("#reviewNoteInput").value || null,
     structured_opinion: collectStructuredOpinion(overlay),
   };
+  const check = validateReviewPayload(payload);
+  if (!check.ok) {
+    showToast(check.errors[0], "warning");
+    return;
+  }
   await request(`/api/doctor/reviews/${currentReviewId}`, {
     method: "PUT",
     body: JSON.stringify(payload),
@@ -383,11 +398,11 @@ async function refreshAll() {
   await Promise.all([loadReviews(), loadHighRisk(), loadHistory(), loadDashboard()]);
 }
 
-function onSection(section) {
+function onSection(section, params = {}) {
   setPageTitle(SECTION_TITLES[section] || "");
   if (section === "dashboard") loadDashboard();
-  else if (section === "reviews") loadReviews();
-  else if (section === "highRisk") loadHighRisk();
+  else if (section === "reviews") loadReviews(false, params.report);
+  else if (section === "highRisk") loadHighRisk(false, params.report);
   else if (section === "history") loadHistory();
 }
 

@@ -16,6 +16,8 @@ import {
 import { renderSources, renderLlmCalls } from "./shared/result.js";
 import { normalizeRagEvaluation } from "./shared/normalizers.js";
 import { initNav, setPageTitle, showSkeleton, setError } from "./shared/view.js";
+import { cachedRequest, invalidateCache } from "./shared/cache.js";
+import { validateKnowledgeDocument, validateWorkflowGraph } from "./shared/validators.js";
 
 const SECTION_TITLES = {
   dashboard: "首页概览",
@@ -60,8 +62,8 @@ async function loadDashboard() {
   showSkeleton(els.metricGrid, 4);
   try {
     const [alerts, llm] = await Promise.all([
-      request("/api/admin/alerts").catch(() => ({})),
-      request("/api/admin/llm/metrics").catch(() => ({})),
+      cachedRequest("admin:alerts", () => request("/api/admin/alerts")).catch(() => ({})),
+      cachedRequest("admin:llm", () => request("/api/admin/llm/metrics")).catch(() => ({})),
     ]);
     const rag = alerts.rag_evaluation || {};
     els.metricGrid.innerHTML = `
@@ -108,8 +110,9 @@ async function createKnowledgeDoc() {
     content: els.knowledgeContentInput.value.trim(),
     active: true,
   };
-  if (!payload.title || !payload.content) {
-    showToast("请填写标题和内容", "warning");
+  const check = validateKnowledgeDocument(payload);
+  if (!check.ok) {
+    showToast(check.errors[0], "warning");
     return;
   }
   const data = await request("/api/admin/knowledge/documents", {
@@ -130,6 +133,7 @@ async function rebuildChroma() {
   try {
     setStatus("重建向量库中...");
     const data = await request("/api/admin/chroma/rebuild", { method: "POST" });
+    invalidateCache("admin:rag"); // rebuild changes retrieval quality
     els.knowledgeBox.textContent = JSON.stringify(data, null, 2);
     showToast("向量库重建完成");
   } catch (error) {
@@ -144,7 +148,7 @@ async function rebuildChroma() {
 async function loadRagEvaluation() {
   showSkeleton(els.ragBox, 3);
   try {
-    const data = normalizeRagEvaluation(await request("/api/admin/rag/evaluation"));
+    const data = normalizeRagEvaluation(await cachedRequest("admin:rag", () => request("/api/admin/rag/evaluation")));
     let html = `<div class="result-metrics">`;
     html += `<div class="metric-card"><span>后端</span><strong>${escapeHtml(data.backend)}</strong></div>`;
     html += `<div class="metric-card"><span>测试用例</span><strong>${data.caseCount}</strong></div>`;
@@ -199,7 +203,7 @@ async function loadRagEvaluation() {
 async function loadWorkflowConfig() {
   const data = await request("/api/admin/workflow/configs/default");
   els.workflowJsonInput.value = JSON.stringify({ nodes: data.nodes || [], edges: data.edges || [] }, null, 2);
-  els.workflowPreview.innerHTML = renderWorkflowAdmin(data);
+  els.workflowPreview.innerHTML = renderWorkflowGraph(data);
   showToast("工作流配置已加载");
 }
 
@@ -211,24 +215,68 @@ async function saveWorkflowConfig() {
     showToast("工作流 JSON 格式不正确", "error");
     return;
   }
+  const check = validateWorkflowGraph(payload);
+  if (!check.ok) {
+    els.workflowPreview.innerHTML = `<div class="error-state"><p>保存被拦截，请修正：</p><ul>${check.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul></div>`;
+    showToast(check.errors[0], "error");
+    return;
+  }
   const data = await request("/api/admin/workflow/graph", {
     method: "PUT",
     body: JSON.stringify(payload),
   });
-  els.workflowPreview.innerHTML = renderWorkflowAdmin(data.config || payload);
+  els.workflowPreview.innerHTML = renderWorkflowGraph(data.config || payload);
   showToast("工作流配置已保存");
 }
 
-function renderWorkflowAdmin(config) {
+// Visual read-only preview: entry/risk nodes highlighted, edges as source→target
+// with condition labels. visited_agents (if present) marks the executed path.
+function renderWorkflowGraph(config) {
+  const nodes = config.nodes || [];
+  const edges = config.edges || [];
+  const visited = new Set(config.visited_agents || []);
+  // Entry nodes = never a target of any edge.
+  const targets = new Set(edges.map((e) => e.target));
+  const isEntry = (n) => !targets.has(n.node_id);
+  const isRisk = (n) => /risk|safety|guard|escalat/i.test(`${n.agent_id} ${n.node_id} ${n.label || ""}`);
+
+  const nodeCards = nodes.length ? nodes.map((n) => {
+    const flags = [];
+    if (isEntry(n)) flags.push('<span class="wf-tag entry">入口</span>');
+    if (isRisk(n)) flags.push('<span class="wf-tag risk">风险</span>');
+    if (visited.has(n.agent_id) || visited.has(n.node_id)) flags.push('<span class="wf-tag visited">已执行</span>');
+    const cls = `wf-node${visited.has(n.agent_id) || visited.has(n.node_id) ? " visited" : ""}${isEntry(n) ? " entry" : ""}`;
+    return `
+      <div class="${cls}">
+        <div class="wf-node-head">
+          <strong>${escapeHtml(n.label || n.node_id)}</strong>
+          <span class="wf-node-id">${escapeHtml(n.node_id)}</span>
+        </div>
+        <div class="wf-node-agent">agent: ${escapeHtml(n.agent_id || "-")}</div>
+        <div class="wf-flags">${flags.join("")}</div>
+      </div>
+    `;
+  }).join("") : "<p>暂无节点</p>";
+
+  const edgeRows = edges.length ? edges.map((e) => `
+    <div class="wf-edge">
+      <span class="wf-edge-src">${escapeHtml(e.source)}</span>
+      <span class="wf-edge-arrow">→</span>
+      <span class="wf-edge-dst">${escapeHtml(e.target)}</span>
+      ${e.condition ? `<span class="wf-edge-cond">${escapeHtml(e.condition)}</span>` : ""}
+      ${e.label ? `<span class="wf-edge-label">${escapeHtml(e.label)}</span>` : ""}
+    </div>
+  `).join("") : "<p>暂无连线</p>";
+
   return `
     <h3>工作流配置：${escapeHtml(config.name || config.config_id || "default")}</h3>
-    <div class="result-metrics">
-      <div class="metric-card"><span>节点</span><strong>${(config.nodes || []).length}</strong></div>
-      <div class="metric-card"><span>连线</span><strong>${(config.edges || []).length}</strong></div>
+    <div class="result-metrics compact">
+      <div class="metric-card"><span>节点</span><strong>${nodes.length}</strong></div>
+      <div class="metric-card"><span>连线</span><strong>${edges.length}</strong></div>
       <div class="metric-card"><span>状态</span><strong>${config.active ? "启用" : "停用"}</strong></div>
     </div>
-    ${renderSimpleTable("节点", config.nodes || [], ["node_id", "agent_id", "label"])}
-    ${renderSimpleTable("连线", config.edges || [], ["source", "target", "label", "condition"])}
+    <div class="result-section"><h4>节点</h4><div class="wf-node-grid">${nodeCards}</div></div>
+    <div class="result-section"><h4>连线</h4><div class="wf-edge-list">${edgeRows}</div></div>
   `;
 }
 
@@ -236,7 +284,7 @@ function renderWorkflowAdmin(config) {
 async function loadLlmMetrics() {
   showSkeleton(els.llmBox, 2);
   try {
-    const data = await request("/api/admin/llm/metrics");
+    const data = await cachedRequest("admin:llm", () => request("/api/admin/llm/metrics"));
     els.llmBox.innerHTML = `<div class="admin-panel">${escapeHtml(JSON.stringify(data, null, 2))}</div>`;
     showToast("LLM 指标已刷新");
   } catch (error) {
@@ -248,7 +296,7 @@ async function loadLlmMetrics() {
 async function loadConsultationTrace() {
   showSkeleton(els.traceBox, 4);
   try {
-    const data = await request("/api/admin/consultation-trace");
+    const data = await cachedRequest("admin:trace", () => request("/api/admin/consultation-trace"));
     els.traceBox.innerHTML = data.length ? data.map((item) => `
       <div class="admin-row risk-border-${escapeHtml(item.risk_level)}">
         <strong>#${item.consultation_id} · ${agentLabel(item.agent_type)} · ${escapeHtml(item.status)}</strong>
@@ -277,7 +325,7 @@ async function loadConsultationTrace() {
 async function loadAuditLogs() {
   showSkeleton(els.auditBox, 4);
   try {
-    const data = await request("/api/admin/audit");
+    const data = await cachedRequest("admin:audit", () => request("/api/admin/audit"));
     els.auditBox.innerHTML = data.length ? data.map((item) => `
       <div class="admin-row risk-border-${escapeHtml(item.risk_level)}">
         <strong>#${item.id} · ${escapeHtml(item.action)} · ${escapeHtml(item.risk_level)}</strong>
@@ -367,7 +415,7 @@ async function processDataRequest(requestId, status) {
 async function loadAdminAlerts() {
   showSkeleton(els.alertsBox, 3);
   try {
-    const data = await request("/api/admin/alerts");
+    const data = await cachedRequest("admin:alerts", () => request("/api/admin/alerts"));
     els.alertsBox.innerHTML = renderAdminAlerts(data);
     showToast("异常告警已刷新");
   } catch (error) {
@@ -400,6 +448,7 @@ function renderAdminAlerts(data) {
 
 async function adminRunDueNotifications() {
   const data = await request("/api/admin/notifications/run-due", { method: "POST" });
+  invalidateCache("admin:alerts");
   els.alertsBox.innerHTML = `<div class="admin-panel">${escapeHtml(JSON.stringify(data, null, 2))}</div>`;
   showToast("管理员扫描完成");
 }
@@ -419,9 +468,9 @@ function onSection(section) {
 
 function bindAdminEvents() {
   els.logoutBtn.addEventListener("click", logout);
-  els.ragEvalBtn.addEventListener("click", loadRagEvaluation);
-  els.llmMetricsBtn.addEventListener("click", loadLlmMetrics);
-  els.adminAlertsBtn.addEventListener("click", loadAdminAlerts);
+  els.ragEvalBtn.addEventListener("click", () => { invalidateCache("admin:rag"); loadRagEvaluation(); });
+  els.llmMetricsBtn.addEventListener("click", () => { invalidateCache("admin:llm"); loadLlmMetrics(); });
+  els.adminAlertsBtn.addEventListener("click", () => { invalidateCache("admin:alerts"); loadAdminAlerts(); });
   els.rebuildChromaBtn.addEventListener("click", rebuildChroma);
   els.adminRunDueBtn.addEventListener("click", () => adminRunDueNotifications().catch(toastError));
   els.loadKnowledgeDocsBtn.addEventListener("click", () => loadKnowledgeDocs().catch(toastError));
@@ -429,9 +478,9 @@ function bindAdminEvents() {
   els.loadKnowledgeChangesBtn.addEventListener("click", () => loadKnowledgeChanges().catch(toastError));
   els.loadWorkflowBtn.addEventListener("click", () => loadWorkflowConfig().catch(toastError));
   els.saveWorkflowBtn.addEventListener("click", () => saveWorkflowConfig().catch(toastError));
-  els.loadConsultationTraceBtn.addEventListener("click", () => loadConsultationTrace().catch(toastError));
+  els.loadConsultationTraceBtn.addEventListener("click", () => { invalidateCache("admin:trace"); loadConsultationTrace().catch(toastError); });
   els.loadDataRequestsBtn.addEventListener("click", () => loadDataRequests().catch(toastError));
-  els.loadAuditBtn.addEventListener("click", () => loadAuditLogs().catch(toastError));
+  els.loadAuditBtn.addEventListener("click", () => { invalidateCache("admin:audit"); loadAuditLogs().catch(toastError); });
   els.loadPrivacyBtn.addEventListener("click", () => loadPrivacyCompliance().catch(toastError));
 }
 

@@ -26,10 +26,11 @@ import {
   setPageTitle,
   setBusy,
   showSkeleton,
-  showEmpty,
   setError,
   openDrawer,
 } from "./shared/view.js";
+import { navigate } from "./shared/router.js";
+import { validateConsultationPayload } from "./shared/validators.js";
 
 const DEPTH = { depth: "patient" };
 const SECTION_TITLES = {
@@ -361,8 +362,9 @@ async function loadPatientDataRequests() {
 
 // ===== Consultation =====
 async function runConsultation({ panel, button, message, agent }) {
-  if (!message) {
-    showToast("请输入咨询内容", "warning");
+  const check = validateConsultationPayload({ message });
+  if (!check.ok) {
+    showToast(check.errors[0], "warning");
     return;
   }
   setStatus("智能体处理中...");
@@ -476,7 +478,7 @@ async function loadHistory() {
           .join("")
       : renderEmptyHistory();
     els.historyList.querySelectorAll("[data-history]").forEach((item) => {
-      item.addEventListener("click", () => loadConsultationDetail(item.dataset.history));
+      item.addEventListener("click", () => navigate("history", { id: item.dataset.history }));
     });
   } catch (error) {
     setError(els.historyList, `加载失败: ${error.message}`, loadHistory);
@@ -664,13 +666,16 @@ function showPanelError(panel, error) {
 }
 
 // ===== Section lazy-load on nav switch =====
-function onSection(section) {
+function onSection(section, params = {}) {
   setPageTitle(SECTION_TITLES[section] || "");
   if (section === "dashboard") loadDashboard();
   else if (section === "consult") loadScenarios();
   else if (section === "health" && !careLoaded) loadCare();
-  else if (section === "history") loadHistory();
-  else if (section === "privacy" && !els.privacyBox.innerHTML.trim()) {
+  else if (section === "history") {
+    loadHistory().then(() => {
+      if (params.id) loadConsultationDetail(params.id);
+    });
+  } else if (section === "privacy" && !els.privacyBox.innerHTML.trim()) {
     els.privacyBox.innerHTML = "<div class='empty-state'><p>选择上方操作查看同意记录或数据申请</p></div>";
   }
 }

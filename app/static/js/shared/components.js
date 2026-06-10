@@ -1,4 +1,5 @@
 import { escapeHtml } from "./format.js";
+import { trapFocus, restoreFocus, bindEscapeClose } from "./a11y.js";
 
 export function showToast(message, type = "success", duration = 3000) {
   const toast = document.createElement("div");
@@ -54,23 +55,35 @@ export function renderEmpty(message = "暂无数据") {
 
 // Creates a modal overlay from an inner-HTML string and appends it to the body.
 // Returns the overlay element. Close buttons use [data-modal-close]; clicking the
-// backdrop also closes. Returns { overlay, close } so callers can wire submit handlers.
+// backdrop also closes. Focus is trapped inside and restored on close; Esc closes.
 export function openModal(innerHtml) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
   overlay.innerHTML = `<div class="modal">${innerHtml}</div>`;
-  const close = () => overlay.remove();
+  let releaseTrap = () => {};
+  let releaseEsc = () => {};
+  const close = () => {
+    releaseTrap();
+    releaseEsc();
+    overlay.remove();
+    restoreFocus();
+  };
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) close();
   });
   overlay.querySelectorAll("[data-modal-close]").forEach((btn) => btn.addEventListener("click", close));
   document.body.appendChild(overlay);
+  releaseTrap = trapFocus(overlay);
+  releaseEsc = bindEscapeClose(overlay, close);
   return { overlay, close };
 }
 
 export function closeModal(overlay) {
   if (overlay) overlay.remove();
   else document.querySelector(".modal-overlay")?.remove();
+  restoreFocus();
 }
 
 export function renderSimpleTable(title, rows, columns) {

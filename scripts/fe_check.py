@@ -104,6 +104,48 @@ for js_name, html_stem in PAGE_MAP.items():
     if missing:
         warnings.append(f"{js_name}.js uses ids absent in {html_stem}.html: {sorted(missing)}")
 
+# 8) R3 invariants: new shared modules exist
+R3_MODULES = ["router", "cache", "tasks", "validators", "contracts", "a11y"]
+for mod in R3_MODULES:
+    p = ROOT / "js" / "shared" / f"{mod}.js"
+    if not p.exists():
+        errors.append(f"R3 module missing: shared/{mod}.js")
+
+def js(path):
+    p = ROOT / path
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+# 9) router wired into view.initNav (hash routing active)
+view = js("js/shared/view.js")
+if "onRouteChange" not in view or "parseHash" not in view:
+    errors.append("view.js initNav not wired to router (onRouteChange/parseHash missing)")
+
+# 10) validators wired into the three submit sites
+if "validateConsultationPayload" not in js("js/patient.js"):
+    errors.append("patient.js: consultation submit not guarded by validateConsultationPayload")
+if "validateReviewPayload" not in js("js/doctor.js"):
+    errors.append("doctor.js: review submit not guarded by validateReviewPayload")
+adm = js("js/admin.js")
+if "validateKnowledgeDocument" not in adm:
+    errors.append("admin.js: knowledge create not guarded by validateKnowledgeDocument")
+if "validateWorkflowGraph" not in adm:
+    errors.append("admin.js: workflow save not guarded by validateWorkflowGraph")
+
+# 11) a11y wired into modal (components) and drawer (view)
+comp = js("js/shared/components.js")
+if "trapFocus" not in comp or "restoreFocus" not in comp:
+    errors.append("components.openModal not wired to a11y (trapFocus/restoreFocus)")
+if "trapFocus" not in view or "restoreFocus" not in view:
+    errors.append("view.openDrawer not wired to a11y (trapFocus/restoreFocus)")
+
+# 12) workflow graph renderer present
+if "renderWorkflowGraph" not in adm:
+    errors.append("admin.js: renderWorkflowGraph missing")
+
+# 13) concurrency guard on doctor report
+if "runLatest" not in js("js/doctor.js"):
+    warnings.append("doctor.js: loadDoctorReport not wrapped in runLatest")
+
 print("\n=== RESULT ===")
 for w in warnings: print("WARN:", w)
 for e in errors: print("ERROR:", e)

@@ -1,4 +1,6 @@
 import { escapeHtml } from "./format.js";
+import { parseHash, navigate, onRouteChange } from "./router.js";
+import { trapFocus, restoreFocus, bindEscapeClose } from "./a11y.js";
 
 // ===== Navigation + section switching =====
 // Pages declare nav buttons with [data-section] inside #appNav, and content
@@ -18,24 +20,30 @@ export function setActiveNav(section) {
   });
 }
 
-// Wire nav buttons + mobile toggle. onChange(section) fires on every switch
-// (use it to lazy-load the section's data).
+// Wire nav buttons + mobile toggle with hash routing. onChange(section, params)
+// fires on every switch (use it to lazy-load the section's data). The active
+// section lives in location.hash, so refresh/back/forward and shared links work.
 export function initNav(defaultSection, onChange) {
   const nav = document.querySelector("#appNav");
   const toggle = document.querySelector("#navToggle");
   if (toggle) toggle.addEventListener("click", () => nav?.classList.toggle("open"));
 
+  const knownSections = new Set(
+    Array.from(nav?.querySelectorAll("[data-section]") || []).map((b) => b.dataset.section),
+  );
+
+  const applyRoute = ({ section, params }) => {
+    const target = section && knownSections.has(section) ? section : defaultSection;
+    showSection(target);
+    if (onChange) onChange(target, params || {});
+  };
+
   nav?.querySelectorAll("[data-section]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const section = btn.dataset.section;
-      showSection(section);
-      if (onChange) onChange(section);
-    });
+    btn.addEventListener("click", () => navigate(btn.dataset.section));
   });
-  if (defaultSection) {
-    showSection(defaultSection);
-    if (onChange) onChange(defaultSection);
-  }
+
+  onRouteChange(applyRoute);
+  applyRoute(parseHash());
 }
 
 function closeNav() {
@@ -48,6 +56,9 @@ export function setPageTitle(text) {
 }
 
 // ===== Drawer (right-side detail panel) =====
+let drawerReleaseTrap = () => {};
+let drawerReleaseEsc = () => {};
+
 export function openDrawer(title, innerHtml) {
   let drawer = document.querySelector("#appDrawer");
   let backdrop = document.querySelector("#drawerBackdrop");
@@ -55,6 +66,8 @@ export function openDrawer(title, innerHtml) {
     drawer = document.createElement("aside");
     drawer.id = "appDrawer";
     drawer.className = "app-drawer";
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
     document.body.appendChild(drawer);
   }
   if (!backdrop) {
@@ -67,20 +80,28 @@ export function openDrawer(title, innerHtml) {
   drawer.innerHTML = `
     <div class="app-drawer-header">
       <h3>${escapeHtml(title)}</h3>
-      <button class="modal-close" id="drawerCloseBtn">&times;</button>
+      <button class="modal-close" id="drawerCloseBtn" aria-label="关闭">&times;</button>
     </div>
     <div class="app-drawer-body">${innerHtml}</div>
   `;
   drawer.querySelector("#drawerCloseBtn").addEventListener("click", closeDrawer);
   drawer.hidden = false;
   backdrop.hidden = false;
+  drawerReleaseTrap = trapFocus(drawer);
+  drawerReleaseEsc = bindEscapeClose(drawer, closeDrawer);
 }
 
 export function closeDrawer() {
   const drawer = document.querySelector("#appDrawer");
   const backdrop = document.querySelector("#drawerBackdrop");
+  const wasOpen = drawer && !drawer.hidden;
+  drawerReleaseTrap();
+  drawerReleaseEsc();
+  drawerReleaseTrap = () => {};
+  drawerReleaseEsc = () => {};
   if (drawer) drawer.hidden = true;
   if (backdrop) backdrop.hidden = true;
+  if (wasOpen) restoreFocus();
 }
 
 // ===== Loading / empty / error states =====
