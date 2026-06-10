@@ -3,9 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+
+# Big JSON / free-text payloads (full LLM result, structured outputs, eval
+# responses) can exceed MySQL TEXT's 64KB limit with real model output. Use
+# LONGTEXT (4GB) on MySQL and fall back to TEXT elsewhere (e.g. SQLite).
+LongText = Text().with_variant(LONGTEXT, "mysql")
 
 
 class User(Base):
@@ -53,10 +60,10 @@ class Consultation(Base):
     agent_type: Mapped[str] = mapped_column(String(40), index=True)
     input_text: Mapped[str] = mapped_column(Text)
     sanitized_input: Mapped[str] = mapped_column(Text)
-    summary: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(LongText)
     risk_level: Mapped[str] = mapped_column(String(20), index=True)
-    sources_json: Mapped[str] = mapped_column(Text, default="[]")
-    result_json: Mapped[str] = mapped_column(Text)
+    sources_json: Mapped[str] = mapped_column(LongText, default="[]")
+    result_json: Mapped[str] = mapped_column(LongText)
     doctor_review_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
     image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -344,7 +351,7 @@ class AgentRun(Base):
     risk_level: Mapped[str] = mapped_column(String(20), index=True)
     refusal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     safety_flags_json: Mapped[str] = mapped_column(Text, default="[]")
-    trace_json: Mapped[str] = mapped_column(Text, default="[]")
+    trace_json: Mapped[str] = mapped_column(LongText, default="[]")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -555,7 +562,7 @@ class EvaluationRun(Base):
     agent_quality_rate: Mapped[float] = mapped_column(Float, default=0.0)
     avg_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
-    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(LongText, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -575,8 +582,8 @@ class EvaluationResult(Base):
     passed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     metrics_json: Mapped[str] = mapped_column(Text, default="{}")
-    failures_json: Mapped[str] = mapped_column(Text, default="[]")
-    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    failures_json: Mapped[str] = mapped_column(LongText, default="[]")
+    response_json: Mapped[str] = mapped_column(LongText, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     run: Mapped[EvaluationRun] = relationship(back_populates="results")
