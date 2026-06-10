@@ -59,10 +59,22 @@
               </div>
             </div>
             <div class="knowledge-form">
-              <input id="knowledgeTitleInput" placeholder="文档标题" />
-              <input id="knowledgeCategoryInput" placeholder="分类，如：health" />
-              <input id="knowledgeSourceInput" placeholder="来源" />
-              <textarea id="knowledgeContentInput" rows="3" placeholder="知识内容"></textarea>
+              <label class="field-label" for="knowledgeTitleInput">
+                文档标题<span class="req">*</span>
+                <input id="knowledgeTitleInput" placeholder="文档标题" />
+              </label>
+              <label class="field-label" for="knowledgeCategoryInput">
+                分类<span class="req">*</span><small>如：health / triage / medication</small>
+                <input id="knowledgeCategoryInput" placeholder="分类，如：health" />
+              </label>
+              <label class="field-label" for="knowledgeSourceInput">
+                来源<span class="req">*</span><small>文献名称或录入说明</small>
+                <input id="knowledgeSourceInput" placeholder="来源" />
+              </label>
+              <label class="field-label" for="knowledgeContentInput">
+                知识内容<span class="req">*</span>
+                <textarea id="knowledgeContentInput" rows="3" placeholder="知识内容"></textarea>
+              </label>
               <button id="createKnowledgeDocBtn" class="primary">新增文档</button>
             </div>
           </div>

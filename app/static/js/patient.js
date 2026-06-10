@@ -30,7 +30,14 @@ import {
   openDrawer,
 } from "./shared/view.js";
 import { navigate } from "./shared/router.js";
-import { validateConsultationPayload } from "./shared/validators.js";
+import {
+  validateConsultationPayload,
+  validateTreatmentRecord,
+  validateReminder,
+  validateToothRecord,
+  validateProfile,
+} from "./shared/validators.js";
+import { clearFormErrors, applyErrors } from "./shared/form.js";
 
 const DEPTH = { depth: "patient" };
 const SECTION_TITLES = {
@@ -153,9 +160,17 @@ async function loadScenarios() {
 }
 
 async function saveProfile() {
+  const container = document.querySelector('[data-section="profile"]');
+  clearFormErrors(container);
+  const payload = profilePayload();
+  const { ok, fieldErrors } = validateProfile({ age: els.ageInput.value });
+  if (!ok) {
+    applyErrors(container, fieldErrors);
+    return;
+  }
   const data = await request("/api/patient/profile", {
     method: "PUT",
-    body: JSON.stringify(profilePayload()),
+    body: JSON.stringify(payload),
   });
   showToast(data.ok ? "资料保存成功" : "保存失败", data.ok ? "success" : "error");
 }
@@ -225,19 +240,21 @@ function renderEmptyCare() {
 }
 
 async function addTreatmentRecord() {
-  const treatmentName = els.recordTreatmentInput.value.trim();
-  const diagnosisText = els.recordDiagnosisInput.value.trim();
-  if (!treatmentName || !diagnosisText) {
-    showToast("请填写治疗名称和诊断", "warning");
+  const container = document.querySelector('[data-section="health"]');
+  clearFormErrors(container);
+  const payload = {
+    treatment_name: els.recordTreatmentInput.value.trim(),
+    diagnosis_text: els.recordDiagnosisInput.value.trim(),
+    next_visit_at: toIsoOrNull(els.recordNextVisitInput.value),
+  };
+  const { ok, fieldErrors } = validateTreatmentRecord(payload);
+  if (!ok) {
+    applyErrors(container, fieldErrors);
     return;
   }
   await request("/api/patient/treatment-records", {
     method: "POST",
-    body: JSON.stringify({
-      treatment_name: treatmentName,
-      diagnosis_text: diagnosisText,
-      next_visit_at: toIsoOrNull(els.recordNextVisitInput.value),
-    }),
+    body: JSON.stringify(payload),
   });
   els.recordTreatmentInput.value = "";
   els.recordDiagnosisInput.value = "";
@@ -246,14 +263,17 @@ async function addTreatmentRecord() {
 }
 
 async function addReminder() {
-  const note = els.reminderNoteInput.value.trim();
-  if (!note) {
-    showToast("请填写提醒内容", "warning");
+  const container = document.querySelector('[data-section="health"]');
+  clearFormErrors(container);
+  const payload = { note: els.reminderNoteInput.value.trim(), due_at: toIsoOrNull(els.recordNextVisitInput.value) };
+  const { ok, fieldErrors } = validateReminder(payload);
+  if (!ok) {
+    applyErrors(container, fieldErrors);
     return;
   }
   await request("/api/patient/reminders", {
     method: "POST",
-    body: JSON.stringify({ note, due_at: toIsoOrNull(els.recordNextVisitInput.value) }),
+    body: JSON.stringify(payload),
   });
   els.reminderNoteInput.value = "";
   await loadCare();
@@ -261,21 +281,24 @@ async function addReminder() {
 }
 
 async function addToothRecord() {
-  const toothPosition = els.toothPositionInput.value.trim();
-  if (!toothPosition) {
-    showToast("请填写牙位", "warning");
+  const container = document.querySelector('[data-section="health"]');
+  clearFormErrors(container);
+  const cycleDays = Number.parseInt(els.toothCycleInput.value, 10);
+  const payload = {
+    tooth_position: els.toothPositionInput.value.trim(),
+    status: els.toothStatusInput.value.trim() || "观察",
+    diagnosis_text: els.recordDiagnosisInput.value.trim() || null,
+    treatment_summary: els.recordTreatmentInput.value.trim() || null,
+    maintenance_cycle_days: Number.isFinite(cycleDays) ? cycleDays : NaN,
+  };
+  const { ok, fieldErrors } = validateToothRecord(payload);
+  if (!ok) {
+    applyErrors(container, fieldErrors);
     return;
   }
-  const cycleDays = Number.parseInt(els.toothCycleInput.value, 10);
   const data = await request("/api/patient/tooth-records", {
     method: "POST",
-    body: JSON.stringify({
-      tooth_position: toothPosition,
-      status: els.toothStatusInput.value.trim() || "观察",
-      diagnosis_text: els.recordDiagnosisInput.value.trim() || null,
-      treatment_summary: els.recordTreatmentInput.value.trim() || null,
-      maintenance_cycle_days: Number.isFinite(cycleDays) ? cycleDays : 180,
-    }),
+    body: JSON.stringify(payload),
   });
   els.careBox.innerHTML = renderToothRecordResult(data);
   showToast("牙位档案已保存");

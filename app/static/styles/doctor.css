@@ -97,3 +97,35 @@
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
 }
+
+/* Metric cards (shared shape with the patient dashboard; doctor.html only
+   loads doctor.css so these must be declared here too). */
+.dashboard-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dashboard-card .dash-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.dashboard-card .dash-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.dashboard-card.accent {
+  border-left: 3px solid var(--brand-primary);
+}
+
+.dashboard-card.risk-high .dash-value { color: var(--danger); }
+.dashboard-card.risk-medium .dash-value { color: var(--warning); }
+.dashboard-card.risk-low .dash-value { color: var(--success); }

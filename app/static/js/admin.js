@@ -18,6 +18,7 @@ import { normalizeRagEvaluation } from "./shared/normalizers.js";
 import { initNav, setPageTitle, showSkeleton, setError } from "./shared/view.js";
 import { cachedRequest, invalidateCache } from "./shared/cache.js";
 import { validateKnowledgeDocument, validateWorkflowGraph } from "./shared/validators.js";
+import { clearFormErrors, applyErrors } from "./shared/form.js";
 
 const SECTION_TITLES = {
   dashboard: "首页概览",
@@ -102,17 +103,19 @@ async function loadKnowledgeDocs() {
 }
 
 async function createKnowledgeDoc() {
+  const container = document.querySelector('[data-section="knowledge"]');
+  clearFormErrors(container);
   const payload = {
     title: els.knowledgeTitleInput.value.trim(),
-    category: els.knowledgeCategoryInput.value.trim() || "health",
-    source: els.knowledgeSourceInput.value.trim() || "管理员内测录入",
+    category: els.knowledgeCategoryInput.value.trim(),
+    source: els.knowledgeSourceInput.value.trim(),
     tags: [],
     content: els.knowledgeContentInput.value.trim(),
     active: true,
   };
   const check = validateKnowledgeDocument(payload);
   if (!check.ok) {
-    showToast(check.errors[0], "warning");
+    applyErrors(container, check.fieldErrors);
     return;
   }
   const data = await request("/api/admin/knowledge/documents", {

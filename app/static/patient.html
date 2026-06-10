@@ -122,13 +122,25 @@
           <details class="care-group" open>
             <summary>治疗记录与提醒</summary>
             <div class="care-group-body">
-              <input id="recordTreatmentInput" placeholder="治疗名称，如：根管治疗" />
-              <input id="recordDiagnosisInput" placeholder="诊断/记录摘要" />
-              <input id="recordNextVisitInput" type="datetime-local" />
+              <label class="field-label" for="recordTreatmentInput">
+                治疗名称<span class="req">*</span>
+                <input id="recordTreatmentInput" placeholder="如：根管治疗" />
+              </label>
+              <label class="field-label" for="recordDiagnosisInput">
+                诊断/记录摘要<span class="req">*</span>
+                <input id="recordDiagnosisInput" placeholder="本次治疗的诊断或记录" />
+              </label>
+              <label class="field-label" for="recordNextVisitInput">
+                下次复诊时间<small>可选</small>
+                <input id="recordNextVisitInput" type="datetime-local" />
+              </label>
               <div class="btn-row">
                 <button id="addRecordBtn">新增治疗记录</button>
               </div>
-              <textarea id="reminderNoteInput" rows="2" placeholder="复诊或护理提醒"></textarea>
+              <label class="field-label" for="reminderNoteInput">
+                提醒内容<span class="req">*</span>
+                <textarea id="reminderNoteInput" rows="2" placeholder="复诊或护理提醒"></textarea>
+              </label>
               <div class="btn-row">
                 <button id="addReminderBtn">新增提醒</button>
                 <button id="runDueNotificationsBtn">扫描到期提醒</button>
@@ -139,9 +151,18 @@
           <details class="care-group">
             <summary>牙位档案与维护</summary>
             <div class="care-group-body">
-              <input id="toothPositionInput" placeholder="牙位，如：右下6 / 46" />
-              <input id="toothStatusInput" placeholder="牙位状态，如：根管后观察" />
-              <input id="toothCycleInput" type="number" min="30" max="720" value="180" aria-label="维护周期天数" />
+              <label class="field-label" for="toothPositionInput">
+                牙位<span class="req">*</span>
+                <input id="toothPositionInput" placeholder="如：右下6 / 46" />
+              </label>
+              <label class="field-label" for="toothStatusInput">
+                牙位状态<small>可选，如：根管后观察</small>
+                <input id="toothStatusInput" placeholder="如：根管后观察" />
+              </label>
+              <label class="field-label" for="toothCycleInput">
+                维护周期（天）<small>30–720 天，默认 180 天（约半年）</small>
+                <input id="toothCycleInput" type="number" min="30" max="720" value="180" aria-label="维护周期天数" />
+              </label>
               <div class="btn-row">
                 <button id="addToothRecordBtn">保存牙位档案</button>
                 <button id="loadToothChartBtn">牙位图</button>

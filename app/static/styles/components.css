@@ -1,3 +1,38 @@
+/* ===== Form validation (required marker + inline field errors) ===== */
+.req {
+  color: var(--danger);
+  margin-left: 2px;
+}
+
+.field-invalid,
+.field-invalid:focus {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12) !important;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 4px 0 0;
+}
+
+/* Labeled field: caption (with optional *) above the input, hint in <small>. */
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.field-label small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* ===== Panels & cards ===== */
 .panel, .consult-card, .result-panel {
   background: var(--bg-secondary);

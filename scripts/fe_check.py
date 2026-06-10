@@ -146,6 +146,26 @@ if "renderWorkflowGraph" not in adm:
 if "runLatest" not in js("js/doctor.js"):
     warnings.append("doctor.js: loadDoctorReport not wrapped in runLatest")
 
+# 14) form.js exists and is used by the three submit pages
+if not (ROOT / "js" / "shared" / "form.js").exists():
+    errors.append("shared/form.js missing")
+for page in ["patient.js", "doctor.js", "admin.js"]:
+    src = js(f"js/{page}")
+    if "applyErrors" not in src or "clearFormErrors" not in src:
+        errors.append(f"{page}: not wired to form.js (applyErrors/clearFormErrors)")
+
+# 15) validators expose the new field-level functions
+val = js("js/shared/validators.js")
+for fn in ["validateTreatmentRecord", "validateReminder", "validateToothRecord", "validateProfile"]:
+    if f"export function {fn}" not in val:
+        errors.append(f"validators.js missing {fn}")
+if "fieldErrors" not in val:
+    errors.append("validators.js: fieldErrors not returned")
+
+# 16) api.js converts 422 to a friendly message
+if "422" not in js("js/shared/api.js"):
+    errors.append("api.js: no 422 handling (raw Pydantic JSON would leak)")
+
 print("\n=== RESULT ===")
 for w in warnings: print("WARN:", w)
 for e in errors: print("ERROR:", e)

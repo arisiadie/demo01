@@ -19,6 +19,7 @@ import {
 import { navigate } from "./shared/router.js";
 import { runLatest } from "./shared/tasks.js";
 import { validateReviewPayload } from "./shared/validators.js";
+import { clearFormErrors, applyErrors } from "./shared/form.js";
 
 const SECTION_TITLES = {
   dashboard: "首页概览",
@@ -278,7 +279,7 @@ async function openReviewModal(reviewId, status) {
           <input type="text" id="signatureTitleInput" placeholder="例如：主治医师">
         </div>
         <div>
-          <label>随访说明（如需随访）</label>
+          <label>随访说明${status === "needs_followup" ? '<span class="req">*</span>' : "（如需随访）"}</label>
           <textarea id="followupInstructionInput" rows="3" placeholder="请输入随访要求..."></textarea>
         </div>
         <div>
@@ -341,12 +342,14 @@ async function submitReview() {
     signature: overlay.querySelector("#signatureInput").value || null,
     signature_title: overlay.querySelector("#signatureTitleInput").value || null,
     followup_instruction: overlay.querySelector("#followupInstructionInput").value || null,
-    note: overlay.querySelector("#reviewNoteInput").value || null,
+    note: overlay.querySelector("#reviewNoteInput").value || "",
     structured_opinion: collectStructuredOpinion(overlay),
   };
   const check = validateReviewPayload(payload);
   if (!check.ok) {
-    showToast(check.errors[0], "warning");
+    clearFormErrors(overlay);
+    const hadField = applyErrors(overlay, check.fieldErrors);
+    if (!hadField) showToast(check.errors[0], "warning"); // e.g. invalid status
     return;
   }
   await request(`/api/doctor/reviews/${currentReviewId}`, {
