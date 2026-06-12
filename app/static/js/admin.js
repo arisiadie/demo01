@@ -13,7 +13,7 @@ import {
   dataRequestTypeLabel,
   dataRequestStatusLabel,
 } from "./shared/format.js";
-import { renderSources, renderLlmCalls } from "./shared/result.js";
+import { renderSources, renderLlmCalls, renderReviewStatus } from "./shared/result.js";
 import { normalizeRagEvaluation } from "./shared/normalizers.js";
 import { initNav, setPageTitle, showSkeleton, setError } from "./shared/view.js";
 import { cachedRequest, invalidateCache } from "./shared/cache.js";
@@ -284,11 +284,109 @@ function renderWorkflowGraph(config) {
 }
 
 // ===== LLM metrics =====
+function renderLlmMetrics(data) {
+  if (!data || typeof data !== "object") {
+    return "<div class='empty-state'><p>暂无数据</p></div>";
+  }
+  
+  const successRate = data.total_calls > 0 
+    ? Math.round((data.success_calls / data.total_calls) * 100) 
+    : 0;
+  const fallbackRate = data.total_calls > 0 
+    ? Math.round((data.fallback_calls / data.total_calls) * 100) 
+    : 0;
+
+  let html = `
+    <div class="llm-metrics-grid">
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">📊</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">${data.total_calls || 0}</div>
+          <div class="llm-metric-label">总调用次数</div>
+        </div>
+      </div>
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">✅</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">${successRate}%</div>
+          <div class="llm-metric-label">成功率</div>
+        </div>
+      </div>
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">🔄</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">${fallbackRate}%</div>
+          <div class="llm-metric-label">降级率</div>
+        </div>
+      </div>
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">⏱️</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">${(data.avg_latency_ms || 0).toLocaleString()}ms</div>
+          <div class="llm-metric-label">平均延迟</div>
+        </div>
+      </div>
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">📝</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">${(data.total_tokens || 0).toLocaleString()}</div>
+          <div class="llm-metric-label">总令牌数</div>
+        </div>
+      </div>
+      <div class="llm-metric-card">
+        <div class="llm-metric-icon">💰</div>
+        <div class="llm-metric-info">
+          <div class="llm-metric-value">$${(data.estimated_cost || 0).toFixed(4)}</div>
+          <div class="llm-metric-label">预估费用</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (data.recent && data.recent.length > 0) {
+    html += `
+      <div class="llm-recent-section">
+        <h3>最近调用记录</h3>
+        <div class="llm-recent-list">
+          ${data.recent.slice(0, 10).map((item) => renderLlmCallItem(item)).join("")}
+        </div>
+      </div>
+    `;
+  }
+  
+  return html;
+}
+
+function renderLlmCallItem(item) {
+  const statusClass = item.status === "success" ? "status-success" : 
+                      item.status === "failed" ? "status-failed" : "status-pending";
+  const statusLabel = item.status === "success" ? "成功" : 
+                      item.status === "failed" ? "失败" : "进行中";
+  
+  return `
+    <div class="llm-call-item">
+      <div class="llm-call-header">
+        <span class="llm-call-id">#${item.id}</span>
+        <span class="llm-model-name">${escapeHtml(item.model_name || "-")}</span>
+        <span class="llm-status ${statusClass}">${statusLabel}</span>
+      </div>
+      <div class="llm-call-info">
+        <span>咨询ID: ${item.consultation_id || "-"}</span>
+        <span>延迟: ${(item.latency_ms || 0).toLocaleString()}ms</span>
+        <span>令牌: ${(item.total_tokens || 0).toLocaleString()}</span>
+        <span>费用: $${(item.estimated_cost || 0).toFixed(4)}</span>
+      </div>
+      <div class="llm-call-time">${formatDate(item.created_at)}</div>
+      ${item.error_message ? `<div class="llm-error-message">错误: ${escapeHtml(item.error_message)}</div>` : ""}
+    </div>
+  `;
+}
+
 async function loadLlmMetrics() {
   showSkeleton(els.llmBox, 2);
   try {
     const data = await cachedRequest("admin:llm", () => request("/api/admin/llm/metrics"));
-    els.llmBox.innerHTML = `<div class="admin-panel">${escapeHtml(JSON.stringify(data, null, 2))}</div>`;
+    els.llmBox.innerHTML = renderLlmMetrics(data);
     showToast("LLM 指标已刷新");
   } catch (error) {
     setError(els.llmBox, `加载失败: ${error.message}`, loadLlmMetrics);
@@ -296,28 +394,117 @@ async function loadLlmMetrics() {
 }
 
 // ===== Consultation trace =====
+function renderConsultationTrace(data) {
+  if (!data || !data.length) {
+    return "<div class='empty-state'><p>暂无咨询追踪记录</p></div>";
+  }
+  
+  return data.map((item) => {
+    const llmCallCount = (item.llm_calls || []).length || (item.llm_call ? 1 : 0);
+    const hitCount = (item.retrieval_hits || []).length;
+    const reviewStatus = item.review?.status || "未复核";
+    
+    return `
+      <div class="trace-card risk-border-${escapeHtml(item.risk_level)}">
+        <div class="trace-header">
+          <div class="trace-id">#${item.consultation_id}</div>
+          <div class="trace-agent">${agentLabel(item.agent_type)}</div>
+          <div class="trace-status ${getTraceStatusClass(item.status)}">${getTraceStatusLabel(item.status)}</div>
+          <div class="trace-risk risk-${escapeHtml(item.risk_level)}">${riskLabel(item.risk_level)}风险</div>
+        </div>
+        
+        <div class="trace-meta">
+          <span class="trace-patient">患者: ${escapeHtml(item.patient_external_id)}</span>
+          <span class="trace-divider">·</span>
+          <span class="trace-review ${item.doctor_review_required ? "review-required" : ""}">
+            ${item.doctor_review_required ? "需复核" : "无需复核"}
+          </span>
+          <span class="trace-divider">·</span>
+          <span class="trace-date">${formatDate(item.created_at)}</span>
+        </div>
+        
+        ${item.summary ? `
+          <div class="trace-summary">
+            <div class="trace-summary-label">咨询摘要</div>
+            <p>${escapeHtml(item.summary.slice(0, 200))}${item.summary.length > 200 ? "..." : ""}</p>
+          </div>
+        ` : ""}
+        
+        <div class="trace-metrics">
+          <div class="trace-metric">
+            <span class="trace-metric-value">${llmCallCount}</span>
+            <span class="trace-metric-label">LLM调用</span>
+          </div>
+          <div class="trace-metric">
+            <span class="trace-metric-value">${item.llm_call?.latency_ms || "-"}</span>
+            <span class="trace-metric-label">延迟(ms)</span>
+          </div>
+          <div class="trace-metric">
+            <span class="trace-metric-value">${item.llm_call?.total_tokens || "-"}</span>
+            <span class="trace-metric-label">Token数</span>
+          </div>
+          <div class="trace-metric">
+            <span class="trace-metric-value">${hitCount}</span>
+            <span class="trace-metric-label">检索命中</span>
+          </div>
+          <div class="trace-metric">
+            <span class="trace-metric-value review-status">${reviewStatus}</span>
+            <span class="trace-metric-label">复核状态</span>
+          </div>
+        </div>
+        
+        <div class="trace-details">
+          <details class="trace-detail-section">
+            <summary>📚 检索命中 (${hitCount})</summary>
+            <div class="trace-detail-content">
+              ${hitCount > 0 ? renderSources(item.retrieval_hits || []) : "<div class='empty-detail'>暂无检索命中记录</div>"}
+            </div>
+          </details>
+          
+          <details class="trace-detail-section">
+            <summary>🤖 模型调用 (${llmCallCount})</summary>
+            <div class="trace-detail-content">
+              ${llmCallCount > 0 ? renderLlmCalls(item.llm_calls || [], item.llm_call) : "<div class='empty-detail'>暂无模型调用记录</div>"}
+            </div>
+          </details>
+          
+          <details class="trace-detail-section">
+            <summary>👩⚕️ 复核状态</summary>
+            <div class="trace-detail-content">
+              ${item.review ? renderReviewStatus(item.review) : "<div class='empty-detail'>暂无复核信息</div>"}
+            </div>
+          </details>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function getTraceStatusClass(status) {
+  const statusMap = {
+    completed: "status-completed",
+    pending: "status-pending",
+    failed: "status-failed",
+    in_progress: "status-progress",
+  };
+  return statusMap[status] || "status-unknown";
+}
+
+function getTraceStatusLabel(status) {
+  const labelMap = {
+    completed: "已完成",
+    pending: "处理中",
+    failed: "失败",
+    in_progress: "进行中",
+  };
+  return labelMap[status] || status;
+}
+
 async function loadConsultationTrace() {
   showSkeleton(els.traceBox, 4);
   try {
     const data = await cachedRequest("admin:trace", () => request("/api/admin/consultation-trace"));
-    els.traceBox.innerHTML = data.length ? data.map((item) => `
-      <div class="admin-row risk-border-${escapeHtml(item.risk_level)}">
-        <strong>#${item.consultation_id} · ${agentLabel(item.agent_type)} · ${escapeHtml(item.status)}</strong>
-        <p>${escapeHtml(item.patient_external_id)} · ${riskLabel(item.risk_level)}风险 · ${item.doctor_review_required ? "需复核" : "无需复核"} · ${formatDate(item.created_at)}</p>
-        <p>${escapeHtml((item.summary || "").slice(0, 140))}${(item.summary || "").length > 140 ? "..." : ""}</p>
-        <div class="export-summary">
-          <span>LLM: ${escapeHtml(item.llm_call?.status || "-")}</span>
-          <span>延迟: ${escapeHtml(item.llm_call?.latency_ms ?? "-")}ms</span>
-          <span>费用: ${escapeHtml(item.llm_call?.estimated_cost ?? "-")}</span>
-          <span>调用: ${(item.llm_calls || []).length || (item.llm_call ? 1 : 0)}</span>
-          <span>复核: ${escapeHtml(item.review?.status || "-")}</span>
-          <span>命中: ${(item.retrieval_hits || []).length}</span>
-        </div>
-        <details class="export-details"><summary>检索命中</summary>${renderSources(item.retrieval_hits || [])}</details>
-        <details class="export-details"><summary>模型调用</summary>${renderLlmCalls(item.llm_calls || [], item.llm_call)}</details>
-        <details class="export-details"><summary>复核状态</summary><pre>${escapeHtml(JSON.stringify(item.review || {}, null, 2))}</pre></details>
-      </div>
-    `).join("") : "<div class='empty-state'><p>暂无咨询追踪记录</p></div>";
+    els.traceBox.innerHTML = renderConsultationTrace(data);
     showToast("咨询追踪已加载");
   } catch (error) {
     setError(els.traceBox, `加载失败: ${error.message}`, loadConsultationTrace);
@@ -325,15 +512,122 @@ async function loadConsultationTrace() {
 }
 
 // ===== Audit =====
+function formatAuditAction(action) {
+  const actionMap = {
+    "data_request.process": "数据请求处理",
+    "data_request.create": "创建数据请求",
+    "knowledge.create": "创建知识库文档",
+    "knowledge.update": "更新知识库文档",
+    "knowledge.delete": "删除知识库文档",
+    "workflow.update": "更新工作流配置",
+    "system.login": "系统登录",
+    "system.logout": "系统登出",
+    "admin.action": "管理员操作",
+  };
+  return actionMap[action] || action.replace(/\./g, " / ").replace(/_/g, " ");
+}
+
+function formatResourceType(type) {
+  const typeMap = {
+    "data_access_request": "数据访问请求",
+    "knowledge_document": "知识库文档",
+    "workflow_config": "工作流配置",
+    "user_account": "用户账户",
+    "system_setting": "系统设置",
+  };
+  return typeMap[type] || type.replace(/_/g, " ");
+}
+
+function renderDetail(detail) {
+  if (!detail || typeof detail !== "object") {
+    return "<div class='detail-empty'>暂无详情信息</div>";
+  }
+  const rows = [];
+  for (const [key, value] of Object.entries(detail)) {
+    const displayKey = formatDetailKey(key);
+    const displayValue = formatDetailValue(value);
+    rows.push(`<div class="detail-row"><span class="detail-key">${displayKey}</span><span class="detail-value">${displayValue}</span></div>`);
+  }
+  return rows.length ? rows.join("") : "<div class='detail-empty'>暂无详情信息</div>";
+}
+
+function formatDetailKey(key) {
+  const keyMap = {
+    status: "状态",
+    note: "备注",
+    reason: "原因",
+    old_value: "原值",
+    new_value: "新值",
+    request_id: "请求ID",
+    user_id: "用户ID",
+    action_type: "操作类型",
+    data_scope: "数据范围",
+    processed_by: "处理人",
+    processed_at: "处理时间",
+    actor_id: "操作人ID",
+    actor_name: "操作人姓名",
+    target_id: "目标ID",
+    target_name: "目标名称",
+    ip_address: "IP地址",
+    user_agent: "客户端",
+    changes: "变更内容",
+    result: "操作结果",
+    error_message: "错误信息",
+  };
+  return keyMap[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatDetailValue(value) {
+  if (value === null || value === undefined) {
+    return "<span class='detail-null'>-</span>";
+  }
+  if (typeof value === "object") {
+    return `<div class='detail-object'><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></div>`;
+  }
+  if (typeof value === "boolean") {
+    return value ? "<span class='detail-badge detail-badge-success'>是</span>" : "<span class='detail-badge detail-badge-danger'>否</span>";
+  }
+  const statusMap = {
+    rejected: { label: "已拒绝", class: "detail-badge-danger" },
+    approved: { label: "已批准", class: "detail-badge-success" },
+    pending: { label: "待处理", class: "detail-badge-warning" },
+    success: { label: "成功", class: "detail-badge-success" },
+    failed: { label: "失败", class: "detail-badge-danger" },
+    active: { label: "启用", class: "detail-badge-success" },
+    inactive: { label: "停用", class: "detail-badge-muted" },
+  };
+  if (statusMap[value]) {
+    const status = statusMap[value];
+    return `<span class='detail-badge ${status.class}'>${status.label}</span>`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
+    return `<span class='detail-date'>${formatDate(value)}</span>`;
+  }
+  return escapeHtml(String(value));
+}
+
 async function loadAuditLogs() {
   showSkeleton(els.auditBox, 4);
   try {
     const data = await cachedRequest("admin:audit", () => request("/api/admin/audit"));
     els.auditBox.innerHTML = data.length ? data.map((item) => `
-      <div class="admin-row risk-border-${escapeHtml(item.risk_level)}">
-        <strong>#${item.id} · ${escapeHtml(item.action)} · ${escapeHtml(item.risk_level)}</strong>
-        <p>${escapeHtml(item.actor_external_id)} / ${escapeHtml(item.actor_role)} · ${escapeHtml(item.resource_type)} #${escapeHtml(item.resource_id || "-")} · ${formatDate(item.created_at)}</p>
-        <details class="export-details"><summary>详情</summary><pre>${escapeHtml(JSON.stringify(item.detail || {}, null, 2))}</pre></details>
+      <div class="audit-item risk-border-${escapeHtml(item.risk_level)}">
+        <div class="audit-header">
+          <div class="audit-id">#${item.id}</div>
+          <div class="audit-action">${formatAuditAction(item.action)}</div>
+          <div class="audit-risk risk-${escapeHtml(item.risk_level)}">${riskLabel(item.risk_level)}风险</div>
+        </div>
+        <div class="audit-info">
+          <span class="audit-actor">${escapeHtml(item.actor_external_id)} · ${agentRoleLabel(item.actor_role)}</span>
+          <span class="audit-divider">·</span>
+          <span class="audit-resource">${formatResourceType(item.resource_type)} #${item.resource_id || "-"}</span>
+          <span class="audit-divider">·</span>
+          <span class="audit-date">${formatDate(item.created_at)}</span>
+        </div>
+        <details class="audit-details">
+          <summary>查看详情</summary>
+          <div class="audit-detail-content">${renderDetail(item.detail)}</div>
+        </details>
       </div>
     `).join("") : "<div class='empty-state'><p>暂无审计日志</p></div>";
     showToast("审计日志已加载");
@@ -450,10 +744,15 @@ function renderAdminAlerts(data) {
 }
 
 async function adminRunDueNotifications() {
-  const data = await request("/api/admin/notifications/run-due", { method: "POST" });
-  invalidateCache("admin:alerts");
-  els.alertsBox.innerHTML = `<div class="admin-panel">${escapeHtml(JSON.stringify(data, null, 2))}</div>`;
-  showToast("管理员扫描完成");
+  setStatus("扫描到期提醒中...");
+  try {
+    await request("/api/admin/notifications/run-due", { method: "POST" });
+    invalidateCache("admin:alerts");
+    await loadAdminAlerts();
+    showToast("扫描到期提醒完成");
+  } finally {
+    setStatus("就绪");
+  }
 }
 
 // ===== Section lazy-load =====
