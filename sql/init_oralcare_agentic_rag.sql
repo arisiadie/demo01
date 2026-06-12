@@ -618,6 +618,23 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   KEY `ix_notifications_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `alert_dismissals` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `alert_key` VARCHAR(200) NOT NULL,
+  `alert_type` VARCHAR(60) NOT NULL,
+  `resource_type` VARCHAR(80) NULL,
+  `resource_id` VARCHAR(80) NULL,
+  `dismissed_by` VARCHAR(80) NOT NULL,
+  `note` TEXT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `ux_alert_dismissals_alert_key` (`alert_key`),
+  KEY `ix_alert_dismissals_id` (`id`),
+  KEY `ix_alert_dismissals_alert_type` (`alert_type`),
+  KEY `ix_alert_dismissals_dismissed_by` (`dismissed_by`),
+  KEY `ix_alert_dismissals_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `evaluation_cases` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `case_id` VARCHAR(80) NOT NULL,

@@ -1,7 +1,7 @@
 import { request } from "./shared/api.js";
 import { getCurrentUser } from "./shared/state.js";
 import { logout, requireRole } from "./shared/auth.js";
-import { showToast, setStatus, renderSimpleTable, flushPendingToast } from "./shared/components.js";
+import { showToast, setStatus, flushPendingToast, confirmDelete } from "./shared/components.js";
 import {
   escapeHtml,
   formatDate,
@@ -41,6 +41,7 @@ function cacheEls() {
     "ragBox", "llmBox", "traceBox", "auditBox", "privacyBox", "alertsBox",
     "ragEvalBtn", "llmMetricsBtn", "adminAlertsBtn", "rebuildChromaBtn", "adminRunDueBtn",
     "loadKnowledgeDocsBtn", "createKnowledgeDocBtn", "loadKnowledgeChangesBtn",
+    "knowledgeFileInput", "knowledgeUploadCategory", "knowledgeUploadSource", "uploadKnowledgeBtn",
     "loadWorkflowBtn", "saveWorkflowBtn", "loadConsultationTraceBtn", "loadDataRequestsBtn",
     "loadAuditBtn", "loadPrivacyBtn",
   ];
@@ -56,6 +57,131 @@ function renderCurrentUser() {
 
 function toastError(error) {
   showToast(error.message, "error");
+}
+
+// ===== Generic record deletion (single + bulk) =====
+// A "scope" is the element that bounds one resource's selection/bulk controls.
+// Single-resource sections use the section box itself as the implicit scope;
+// the privacy view nests multiple [data-del-scope] blocks (one per resource).
+function recordCheckbox(id) {
+  return `<input type="checkbox" class="record-select" data-select="${id}" aria-label="选择记录 ${id}" />`;
+}
+
+function recordDeleteBtn(id, label = "删除") {
+  return `<button type="button" class="small danger-ghost" data-del="${id}">${escapeHtml(label)}</button>`;
+}
+
+function bulkToolbar() {
+  return `
+    <div class="bulk-toolbar">
+      <label class="bulk-select-all">
+        <input type="checkbox" data-select-all /> 全选
+      </label>
+      <button type="button" class="small danger" data-bulk-del disabled>批量删除</button>
+    </div>
+  `;
+}
+
+// Wrap a resource's toolbar + list into a self-contained delete scope. Used by
+// the privacy view where two resources share one container.
+function delScope(resource, innerHtml, { highRisk = false } = {}) {
+  return `<div class="del-scope" data-del-scope data-resource="${resource}" data-high-risk="${highRisk ? "1" : ""}">${innerHtml}</div>`;
+}
+
+function scopeOf(el, box) {
+  return el.closest("[data-del-scope]") || box;
+}
+
+function getSelectedIds(scope) {
+  return Array.from(scope.querySelectorAll("[data-select]:checked")).map((cb) => Number(cb.dataset.select));
+}
+
+function refreshBulkState(scope) {
+  if (!scope) return;
+  const scopes = scope.matches?.("[data-del-scope]")
+    ? [scope]
+    : Array.from(scope.querySelectorAll("[data-del-scope]"));
+  const targets = scopes.length ? scopes : [scope];
+  targets.forEach((s) => {
+    const ids = getSelectedIds(s);
+    const bulkBtn = s.querySelector("[data-bulk-del]");
+    if (bulkBtn) {
+      bulkBtn.disabled = ids.length === 0;
+      bulkBtn.textContent = ids.length ? `批量删除 (${ids.length})` : "批量删除";
+    }
+    const selectAll = s.querySelector("[data-select-all]");
+    const all = s.querySelectorAll("[data-select]");
+    if (selectAll) selectAll.checked = all.length > 0 && ids.length === all.length;
+  });
+}
+
+// Perform the confirmed delete request for one or more ids, then reload the section.
+async function deleteRecords(resource, ids, { highRisk = false, label = "记录", reload, cacheKey } = {}) {
+  if (!ids.length) return;
+  const confirmed = await confirmDelete({
+    title: ids.length > 1 ? "批量删除确认" : "删除确认",
+    message: ids.length > 1
+      ? `即将删除 ${ids.length} 条${label}，此操作不可恢复。`
+      : `即将删除该${label}（#${ids[0]}），此操作不可恢复。`,
+    count: ids.length,
+    highRisk,
+  });
+  if (!confirmed) return;
+  try {
+    const res = await request(`/api/admin/records/${resource}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    });
+    if (cacheKey) invalidateCache(cacheKey);
+    const skipped = res.skipped?.length ? `，跳过 ${res.skipped.length} 条` : "";
+    showToast(`已删除 ${res.deleted} 条${label}${skipped}`);
+    if (reload) await reload();
+  } catch (error) {
+    toastError(error);
+  }
+}
+
+// Attach delegated listeners to a section container once. Survives innerHTML
+// replacement because the listeners live on the persistent box element. The
+// resource/highRisk for a click are taken from the nearest [data-del-scope]
+// (for multi-resource views) and fall back to opts for single-resource boxes.
+function ensureDeletionWiring(box, opts) {
+  if (!box || box.dataset.delWired === "1") return;
+  box.dataset.delWired = "1";
+  const resolve = (scope) => {
+    const resource = scope?.dataset?.resource || opts.resource;
+    return { resource, scope };
+  };
+  box.addEventListener("change", (event) => {
+    const target = event.target;
+    const scope = scopeOf(target, box);
+    if (target.matches("[data-select-all]")) {
+      scope.querySelectorAll("[data-select]").forEach((cb) => { cb.checked = target.checked; });
+    }
+    if (target.matches("[data-select]") || target.matches("[data-select-all]")) {
+      refreshBulkState(scope);
+    }
+  });
+  box.addEventListener("click", (event) => {
+    const delBtn = event.target.closest("[data-del]");
+    if (delBtn && box.contains(delBtn)) {
+      const scope = scopeOf(delBtn, box);
+      const { resource } = resolve(scope);
+      const id = Number(delBtn.dataset.del);
+      const highRisk = opts.highRiskFn ? opts.highRiskFn([id], scope) : !!opts.highRisk;
+      deleteRecords(resource, [id], { ...opts, highRisk });
+      return;
+    }
+    const bulkBtn = event.target.closest("[data-bulk-del]");
+    if (bulkBtn && box.contains(bulkBtn)) {
+      const scope = scopeOf(bulkBtn, box);
+      const { resource } = resolve(scope);
+      const ids = getSelectedIds(scope);
+      if (!ids.length) return;
+      const highRisk = opts.highRiskFn ? opts.highRiskFn(ids, scope) : !!opts.highRisk;
+      deleteRecords(resource, ids, { ...opts, highRisk });
+    }
+  });
 }
 
 // ===== Dashboard metric grid =====
@@ -96,10 +222,84 @@ async function loadDashboard() {
 }
 
 // ===== Knowledge =====
+function renderKnowledgeDocs(docs) {
+  if (!docs || !docs.length) {
+    return "<div class='empty-state'><p>暂无知识库文档</p></div>";
+  }
+  return `
+    ${bulkToolbar()}
+    <div class="record-list">
+      ${docs.map((doc) => `
+        <div class="record-row${doc.active ? "" : " is-inactive"}">
+          ${recordCheckbox(doc.id)}
+          <div class="record-main">
+            <div class="record-title">
+              #${doc.id} · ${escapeHtml(doc.title)}
+              <span class="record-badge ${doc.active ? "badge-active" : "badge-muted"}">${doc.active ? "启用" : "停用"}</span>
+            </div>
+            <div class="record-sub">${escapeHtml(getCategoryName(doc.category))} · ${escapeHtml(doc.source || "-")} · ${escapeHtml(doc.doc_uid)}</div>
+          </div>
+          <div class="record-actions">
+            ${doc.active ? `<button type="button" class="small" data-deactivate="${doc.id}">停用</button>` : ""}
+            ${recordDeleteBtn(doc.id, "彻底删除")}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 async function loadKnowledgeDocs() {
   const data = await request("/api/admin/knowledge/documents");
-  els.knowledgeBox.textContent = JSON.stringify(data.slice(0, 30), null, 2);
+  els.knowledgeBox.innerHTML = renderKnowledgeDocs(data);
+  refreshBulkState(els.knowledgeBox);
   showToast("知识库文档已加载");
+}
+
+async function deactivateKnowledgeDoc(documentId) {
+  const confirmed = await confirmDelete({
+    title: "停用文档",
+    message: `停用后该文档将从检索中下线（可保留记录）。确认停用文档 #${documentId}？`,
+    count: 1,
+  });
+  if (!confirmed) return;
+  try {
+    await request(`/api/admin/knowledge/documents/${documentId}`, { method: "DELETE" });
+    showToast("文档已停用");
+    await loadKnowledgeDocs();
+  } catch (error) {
+    toastError(error);
+  }
+}
+
+async function uploadKnowledgeFile() {
+  const input = els.knowledgeFileInput;
+  const file = input.files?.[0];
+  if (!file) {
+    showToast("请先选择文件", "error");
+    return;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  const category = els.knowledgeUploadCategory.value.trim();
+  const source = els.knowledgeUploadSource.value.trim();
+  if (category) form.append("category", category);
+  if (source) form.append("source", source);
+
+  els.uploadKnowledgeBtn.disabled = true;
+  setStatus("解析并入库中...");
+  try {
+    const res = await request("/api/admin/knowledge/upload", { method: "POST", body: form });
+    invalidateCache("admin:rag");
+    showToast(`已入库：${res.filename} · ${res.chunks} 个分块`);
+    input.value = "";
+    await loadKnowledgeDocs();
+  } catch (error) {
+    toastError(error);
+  } finally {
+    els.uploadKnowledgeBtn.disabled = false;
+    setStatus("就绪");
+  }
 }
 
 async function createKnowledgeDoc() {
@@ -347,13 +547,14 @@ function renderLlmMetrics(data) {
     html += `
       <div class="llm-recent-section">
         <h3>最近调用记录</h3>
+        ${bulkToolbar()}
         <div class="llm-recent-list">
           ${data.recent.slice(0, 10).map((item) => renderLlmCallItem(item)).join("")}
         </div>
       </div>
     `;
   }
-  
+
   return html;
 }
 
@@ -366,9 +567,11 @@ function renderLlmCallItem(item) {
   return `
     <div class="llm-call-item">
       <div class="llm-call-header">
+        ${recordCheckbox(item.id)}
         <span class="llm-call-id">#${item.id}</span>
         <span class="llm-model-name">${escapeHtml(item.model_name || "-")}</span>
         <span class="llm-status ${statusClass}">${statusLabel}</span>
+        <span class="llm-call-actions">${recordDeleteBtn(item.id)}</span>
       </div>
       <div class="llm-call-info">
         <span>咨询ID: ${item.consultation_id || "-"}</span>
@@ -387,6 +590,7 @@ async function loadLlmMetrics() {
   try {
     const data = await cachedRequest("admin:llm", () => request("/api/admin/llm/metrics"));
     els.llmBox.innerHTML = renderLlmMetrics(data);
+    refreshBulkState(els.llmBox);
     showToast("LLM 指标已刷新");
   } catch (error) {
     setError(els.llmBox, `加载失败: ${error.message}`, loadLlmMetrics);
@@ -398,21 +602,23 @@ function renderConsultationTrace(data) {
   if (!data || !data.length) {
     return "<div class='empty-state'><p>暂无咨询追踪记录</p></div>";
   }
-  
-  return data.map((item) => {
+
+  return bulkToolbar() + data.map((item) => {
     const llmCallCount = (item.llm_calls || []).length || (item.llm_call ? 1 : 0);
     const hitCount = (item.retrieval_hits || []).length;
     const reviewStatus = item.review?.status || "未复核";
-    
+
     return `
       <div class="trace-card risk-border-${escapeHtml(item.risk_level)}">
         <div class="trace-header">
+          ${recordCheckbox(item.consultation_id)}
           <div class="trace-id">#${item.consultation_id}</div>
           <div class="trace-agent">${agentLabel(item.agent_type)}</div>
           <div class="trace-status ${getTraceStatusClass(item.status)}">${getTraceStatusLabel(item.status)}</div>
           <div class="trace-risk risk-${escapeHtml(item.risk_level)}">${riskLabel(item.risk_level)}风险</div>
+          <div class="trace-header-actions">${recordDeleteBtn(item.consultation_id)}</div>
         </div>
-        
+
         <div class="trace-meta">
           <span class="trace-patient">患者: ${escapeHtml(item.patient_external_id)}</span>
           <span class="trace-divider">·</span>
@@ -505,6 +711,7 @@ async function loadConsultationTrace() {
   try {
     const data = await cachedRequest("admin:trace", () => request("/api/admin/consultation-trace"));
     els.traceBox.innerHTML = renderConsultationTrace(data);
+    refreshBulkState(els.traceBox);
     showToast("咨询追踪已加载");
   } catch (error) {
     setError(els.traceBox, `加载失败: ${error.message}`, loadConsultationTrace);
@@ -610,12 +817,14 @@ async function loadAuditLogs() {
   showSkeleton(els.auditBox, 4);
   try {
     const data = await cachedRequest("admin:audit", () => request("/api/admin/audit"));
-    els.auditBox.innerHTML = data.length ? data.map((item) => `
+    els.auditBox.innerHTML = data.length ? bulkToolbar() + data.map((item) => `
       <div class="audit-item risk-border-${escapeHtml(item.risk_level)}">
         <div class="audit-header">
+          ${recordCheckbox(item.id)}
           <div class="audit-id">#${item.id}</div>
           <div class="audit-action">${formatAuditAction(item.action)}</div>
           <div class="audit-risk risk-${escapeHtml(item.risk_level)}">${riskLabel(item.risk_level)}风险</div>
+          <div class="audit-header-actions">${recordDeleteBtn(item.id)}</div>
         </div>
         <div class="audit-info">
           <span class="audit-actor">${escapeHtml(item.actor_external_id)} · ${agentRoleLabel(item.actor_role)}</span>
@@ -630,6 +839,7 @@ async function loadAuditLogs() {
         </details>
       </div>
     `).join("") : "<div class='empty-state'><p>暂无审计日志</p></div>";
+    refreshBulkState(els.auditBox);
     showToast("审计日志已加载");
   } catch (error) {
     setError(els.auditBox, `加载失败: ${error.message}`, loadAuditLogs);
@@ -637,6 +847,22 @@ async function loadAuditLogs() {
 }
 
 // ===== Privacy =====
+function renderPrivacyRecordList(rows, idKey, lineFn) {
+  if (!rows || !rows.length) return "<div class='empty-state'><p>暂无记录</p></div>";
+  return `
+    ${bulkToolbar()}
+    <div class="record-list">
+      ${rows.map((row) => `
+        <div class="record-row">
+          ${recordCheckbox(row[idKey])}
+          <div class="record-main">${lineFn(row)}</div>
+          <div class="record-actions">${recordDeleteBtn(row[idKey])}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 async function loadPrivacyCompliance() {
   showSkeleton(els.privacyBox, 3);
   try {
@@ -645,9 +871,22 @@ async function loadPrivacyCompliance() {
       request("/api/admin/privacy/retention-policies"),
     ]);
     els.privacyBox.innerHTML = `
-      ${renderSimpleTable("隐私影响评估", assessments, ["assessment_id", "title", "risk_level", "compliance_status"])}
-      ${renderSimpleTable("数据保留策略", policies, ["data_category", "retention_days", "auto_delete", "archived"])}
+      <div class="result-section">
+        <h4>隐私影响评估</h4>
+        ${delScope("privacy-assessment", renderPrivacyRecordList(assessments, "id", (row) => `
+          <div class="record-title">#${row.id} · ${escapeHtml(row.title)}</div>
+          <div class="record-sub">${escapeHtml(row.assessment_id)} · 风险 ${escapeHtml(riskLabel(row.risk_level))} · ${escapeHtml(row.compliance_status)}</div>
+        `))}
+      </div>
+      <div class="result-section">
+        <h4>数据保留策略</h4>
+        ${delScope("retention-policy", renderPrivacyRecordList(policies, "id", (row) => `
+          <div class="record-title">#${row.id} · ${escapeHtml(row.data_category)}</div>
+          <div class="record-sub">保留 ${row.retention_days} 天 · 自动删除 ${row.auto_delete ? "是" : "否"} · ${row.archived ? "已归档" : "生效中"}</div>
+        `))}
+      </div>
     `;
+    refreshBulkState(els.privacyBox);
     showToast("隐私合规记录已加载");
   } catch (error) {
     setError(els.privacyBox, `加载失败: ${error.message}`, loadPrivacyCompliance);
@@ -658,10 +897,11 @@ async function loadDataRequests() {
   showSkeleton(els.privacyBox, 3);
   try {
     const data = await request("/api/admin/data-requests");
-    els.privacyBox.innerHTML = renderDataRequests("数据导出/删除请求", data);
+    els.privacyBox.innerHTML = delScope("data-request", renderDataRequests("数据导出/删除请求", data));
     els.privacyBox.querySelectorAll("[data-data-request]").forEach((button) => {
       button.addEventListener("click", () => processDataRequest(button.dataset.dataRequest, button.dataset.action).catch(toastError));
     });
+    refreshBulkState(els.privacyBox);
     showToast("数据请求已加载");
   } catch (error) {
     setError(els.privacyBox, `加载失败: ${error.message}`, loadDataRequests);
@@ -671,9 +911,13 @@ async function loadDataRequests() {
 function renderDataRequests(title, rows) {
   return `
     <h3>${escapeHtml(title)}</h3>
-    ${rows && rows.length ? rows.map((item) => `
+    ${rows && rows.length ? bulkToolbar() + rows.map((item) => `
       <div class="admin-row">
-        <strong>#${item.id} · ${escapeHtml(dataRequestTypeLabel(item.request_type))} · ${escapeHtml(dataRequestStatusLabel(item.status))}</strong>
+        <div class="admin-row-head">
+          ${recordCheckbox(item.id)}
+          <strong>#${item.id} · ${escapeHtml(dataRequestTypeLabel(item.request_type))} · ${escapeHtml(dataRequestStatusLabel(item.status))}</strong>
+          <span class="admin-row-actions">${recordDeleteBtn(item.id)}</span>
+        </div>
         <p>${escapeHtml(item.user_external_id)} · ${escapeHtml(item.data_scope)} · ${escapeHtml(item.reason || "")}</p>
         ${item.processed_at ? `<p>处理人：${escapeHtml(item.processed_by || "-")} · ${formatDate(item.processed_at)} · ${escapeHtml(item.note || "")}</p>` : ""}
         ${item.result_summary ? renderDataExportSummary(item.result_summary) : ""}
@@ -714,6 +958,7 @@ async function loadAdminAlerts() {
   try {
     const data = await cachedRequest("admin:alerts", () => request("/api/admin/alerts"));
     els.alertsBox.innerHTML = renderAdminAlerts(data);
+    refreshAlertBulkState();
     showToast("异常告警已刷新");
   } catch (error) {
     setError(els.alertsBox, `加载失败: ${error.message}`, loadAdminAlerts);
@@ -733,14 +978,90 @@ function renderAdminAlerts(data) {
       <strong>RAG 质量</strong>
       <p>命中率 ${escapeHtml(data.rag_evaluation?.hit_rate ?? "-")} · MRR ${escapeHtml(data.rag_evaluation?.mrr ?? "-")} · 用例 ${escapeHtml(data.rag_evaluation?.case_count ?? "-")}</p>
     </div>
-    ${alerts.length ? alerts.map((alert) => `
-      <div class="admin-row alert-${escapeHtml(alert.severity)}">
-        <strong>${escapeHtml(alert.title)} · ${escapeHtml(alert.severity)}</strong>
-        <p>${escapeHtml(alert.message)}</p>
-        <p>${escapeHtml(alert.resource_type || "-")} #${escapeHtml(alert.resource_id || "-")} · ${formatDate(alert.created_at)}</p>
+    ${alerts.length ? `
+      <div class="bulk-toolbar">
+        <label class="bulk-select-all"><input type="checkbox" data-alert-select-all /> 全选</label>
+        <button type="button" class="small danger" data-alert-bulk-dismiss disabled>批量忽略</button>
       </div>
-    `).join("") : "<div class='empty-state'><p>暂无异常告警</p></div>"}
+      ${alerts.map((alert) => `
+        <div class="admin-row alert-${escapeHtml(alert.severity)}">
+          <div class="admin-row-head">
+            <input type="checkbox" class="record-select" data-alert-select="${escapeHtml(alert.key)}" aria-label="选择告警" />
+            <strong>${escapeHtml(alert.title)} · ${escapeHtml(alert.severity)}</strong>
+            <span class="admin-row-actions"><button type="button" class="small danger-ghost" data-alert-dismiss="${escapeHtml(alert.key)}">忽略</button></span>
+          </div>
+          <p>${escapeHtml(alert.message)}</p>
+          <p>${escapeHtml(alert.resource_type || "-")} #${escapeHtml(alert.resource_id ?? "-")} · ${formatDate(alert.created_at)}</p>
+        </div>
+      `).join("")}
+    ` : "<div class='empty-state'><p>暂无异常告警</p></div>"}
   `;
+}
+
+function selectedAlertKeys() {
+  return Array.from(els.alertsBox.querySelectorAll("[data-alert-select]:checked")).map((cb) => cb.dataset.alertSelect);
+}
+
+function refreshAlertBulkState() {
+  const keys = selectedAlertKeys();
+  const bulkBtn = els.alertsBox.querySelector("[data-alert-bulk-dismiss]");
+  if (bulkBtn) {
+    bulkBtn.disabled = keys.length === 0;
+    bulkBtn.textContent = keys.length ? `批量忽略 (${keys.length})` : "批量忽略";
+  }
+  const selectAll = els.alertsBox.querySelector("[data-alert-select-all]");
+  const all = els.alertsBox.querySelectorAll("[data-alert-select]");
+  if (selectAll) selectAll.checked = all.length > 0 && keys.length === all.length;
+}
+
+// Alerts are computed, not stored — "delete" records a reversible dismissal
+// keyed by the alert's stable key rather than removing any underlying data.
+async function dismissAlerts(keys) {
+  if (!keys.length) return;
+  const confirmed = await confirmDelete({
+    title: keys.length > 1 ? "批量忽略告警" : "忽略告警",
+    message: keys.length > 1
+      ? `将忽略 ${keys.length} 条告警。被忽略的告警不再显示，但底层数据不受影响，可后续恢复。`
+      : "将忽略该告警。被忽略的告警不再显示，但底层数据不受影响，可后续恢复。",
+    count: keys.length,
+    confirmLabel: keys.length > 1 ? `忽略 ${keys.length} 条告警` : "确认忽略",
+  });
+  if (!confirmed) return;
+  try {
+    const res = await request("/api/admin/alerts/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ keys }),
+    });
+    invalidateCache("admin:alerts");
+    const skipped = res.skipped?.length ? `，跳过 ${res.skipped.length} 条` : "";
+    showToast(`已忽略 ${res.dismissed} 条告警${skipped}`);
+    await loadAdminAlerts();
+  } catch (error) {
+    toastError(error);
+  }
+}
+
+function bindAlertEvents() {
+  if (els.alertsBox.dataset.alertWired === "1") return;
+  els.alertsBox.dataset.alertWired = "1";
+  els.alertsBox.addEventListener("change", (event) => {
+    const target = event.target;
+    if (target.matches("[data-alert-select-all]")) {
+      els.alertsBox.querySelectorAll("[data-alert-select]").forEach((cb) => { cb.checked = target.checked; });
+    }
+    if (target.matches("[data-alert-select]") || target.matches("[data-alert-select-all]")) {
+      refreshAlertBulkState();
+    }
+  });
+  els.alertsBox.addEventListener("click", (event) => {
+    const dismissBtn = event.target.closest("[data-alert-dismiss]");
+    if (dismissBtn) { dismissAlerts([dismissBtn.dataset.alertDismiss]); return; }
+    const bulkBtn = event.target.closest("[data-alert-bulk-dismiss]");
+    if (bulkBtn) {
+      const keys = selectedAlertKeys();
+      if (keys.length) dismissAlerts(keys);
+    }
+  });
 }
 
 async function adminRunDueNotifications() {
@@ -777,6 +1098,7 @@ function bindAdminEvents() {
   els.adminRunDueBtn.addEventListener("click", () => adminRunDueNotifications().catch(toastError));
   els.loadKnowledgeDocsBtn.addEventListener("click", () => loadKnowledgeDocs().catch(toastError));
   els.createKnowledgeDocBtn.addEventListener("click", () => createKnowledgeDoc().catch(toastError));
+  els.uploadKnowledgeBtn.addEventListener("click", () => uploadKnowledgeFile().catch(toastError));
   els.loadKnowledgeChangesBtn.addEventListener("click", () => loadKnowledgeChanges().catch(toastError));
   els.loadWorkflowBtn.addEventListener("click", () => loadWorkflowConfig().catch(toastError));
   els.saveWorkflowBtn.addEventListener("click", () => saveWorkflowConfig().catch(toastError));
@@ -784,6 +1106,42 @@ function bindAdminEvents() {
   els.loadDataRequestsBtn.addEventListener("click", () => loadDataRequests().catch(toastError));
   els.loadAuditBtn.addEventListener("click", () => { invalidateCache("admin:audit"); loadAuditLogs().catch(toastError); });
   els.loadPrivacyBtn.addEventListener("click", () => loadPrivacyCompliance().catch(toastError));
+  bindDeletionWiring();
+  bindAlertEvents();
+}
+
+// Wire delegated delete/select handlers once per section container. Resource and
+// risk tier are fixed per box (privacy box overrides resource via [data-del-scope]).
+function bindDeletionWiring() {
+  ensureDeletionWiring(els.knowledgeBox, { resource: "knowledge", label: "知识库文档", reload: loadKnowledgeDocs });
+  ensureDeletionWiring(els.llmBox, { resource: "llm", label: "调用记录", reload: loadLlmMetrics, cacheKey: "admin:llm" });
+  ensureDeletionWiring(els.traceBox, {
+    resource: "consultation", label: "咨询记录", reload: loadConsultationTrace, cacheKey: "admin:trace",
+    highRiskFn: (ids, scope) => highRiskTraceSelected(ids, scope),
+  });
+  ensureDeletionWiring(els.auditBox, { resource: "audit", label: "审计日志", reload: loadAuditLogs, cacheKey: "admin:audit", highRisk: true });
+  ensureDeletionWiring(els.privacyBox, { resource: "data-request", label: "记录", reload: reloadPrivacyActive });
+
+  // Knowledge "停用" (soft) uses a separate endpoint, wired alongside delete.
+  els.knowledgeBox.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-deactivate]");
+    if (btn) deactivateKnowledgeDoc(Number(btn.dataset.deactivate));
+  });
+}
+
+// A consultation delete is high-risk when any selected card is marked 高风险.
+function highRiskTraceSelected(ids, scope) {
+  return ids.some((id) => {
+    const card = scope.querySelector(`[data-select="${id}"]`)?.closest(".trace-card");
+    return card?.classList.contains("risk-border-high");
+  });
+}
+
+// The privacy box hosts either the compliance view or the data-request view;
+// reload whichever is currently shown so a delete refreshes the right one.
+function reloadPrivacyActive() {
+  if (els.privacyBox.querySelector("[data-resource='data-request']")) return loadDataRequests();
+  return loadPrivacyCompliance();
 }
 
 async function initAdminApp() {

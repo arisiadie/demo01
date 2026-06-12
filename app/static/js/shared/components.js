@@ -86,6 +86,85 @@ export function closeModal(overlay) {
   restoreFocus();
 }
 
+// Enterprise-style delete confirmation dialog. Returns a Promise<boolean> that
+// resolves true only when the user explicitly confirms. Backdrop/Esc/cancel all
+// resolve false. When highRisk is true, the confirm button stays disabled until
+// the user types the exact word "删除" — a deliberate friction step for
+// irreversible/compliance-sensitive deletions (audit logs, high-risk records).
+export function confirmDelete({ title = "确认删除", message = "", count = 1, highRisk = false, confirmLabel } = {}) {
+  return new Promise((resolve) => {
+    const label = confirmLabel || (count > 1 ? `删除 ${count} 条记录` : "确认删除");
+    const riskBlock = highRisk
+      ? `
+        <div class="confirm-danger-guard">
+          <p class="confirm-danger-hint">此操作不可恢复。请输入 <strong>删除</strong> 两字以确认。</p>
+          <input id="confirmDangerInput" class="confirm-danger-input" type="text"
+                 autocomplete="off" placeholder="输入：删除" aria-label="输入删除以确认" />
+        </div>`
+      : "";
+    const inner = `
+      <div class="modal-header">
+        <h3>${escapeHtml(title)}</h3>
+        <button class="modal-close" data-modal-close aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="confirm-delete-body ${highRisk ? "high-risk" : ""}">
+          <div class="confirm-delete-icon">${highRisk ? "⚠️" : "🗑️"}</div>
+          <div class="confirm-delete-text">${message ? escapeHtml(message) : "确定要删除选中的记录吗？"}</div>
+        </div>
+        ${riskBlock}
+      </div>
+      <div class="modal-footer">
+        <button data-modal-close>取消</button>
+        <button id="confirmDeleteBtn" class="danger"${highRisk ? " disabled" : ""}>${escapeHtml(label)}</button>
+      </div>
+    `;
+    let settled = false;
+    const { overlay, close } = openModal(inner);
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      close();
+      resolve(value);
+    };
+    // openModal binds its own Esc handler that removes the overlay WITHOUT going
+    // through our finish(), which would otherwise hang this promise forever.
+    // Observe removal of the overlay so the Esc path resolves to false too.
+    const observer = new MutationObserver(() => {
+      if (!document.body.contains(overlay) && !settled) {
+        settled = true;
+        observer.disconnect();
+        resolve(false);
+      }
+    });
+    observer.observe(document.body, { childList: true });
+    // Backdrop and close-button paths are handled explicitly below.
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    overlay.querySelectorAll("[data-modal-close]").forEach((btn) =>
+      btn.addEventListener("click", () => finish(false))
+    );
+    const confirmBtn = overlay.querySelector("#confirmDeleteBtn");
+    if (highRisk) {
+      const input = overlay.querySelector("#confirmDangerInput");
+      input.addEventListener("input", () => {
+        confirmBtn.disabled = input.value.trim() !== "删除";
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !confirmBtn.disabled) finish(true);
+      });
+      setTimeout(() => input.focus(), 0);
+    } else {
+      setTimeout(() => confirmBtn.focus(), 0);
+    }
+    confirmBtn.addEventListener("click", () => {
+      if (!confirmBtn.disabled) finish(true);
+    });
+  });
+}
+
 export function renderSimpleTable(title, rows, columns) {
   return `
     <div class="result-section">

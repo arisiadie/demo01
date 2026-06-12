@@ -77,6 +77,27 @@
               </label>
               <button id="createKnowledgeDocBtn" class="primary">新增文档</button>
             </div>
+
+            <div class="knowledge-upload">
+              <div class="knowledge-upload-head">
+                <h3>上传文件入库</h3>
+                <small>支持 txt / md / pdf / docx，单文件 ≤ 10MB，自动按段落切块入库</small>
+              </div>
+              <div class="knowledge-upload-grid">
+                <label class="field-label" for="knowledgeUploadCategory">
+                  分类<small>留空默认 general</small>
+                  <input id="knowledgeUploadCategory" placeholder="如：health" />
+                </label>
+                <label class="field-label" for="knowledgeUploadSource">
+                  来源<small>留空默认“上传文件：文件名”</small>
+                  <input id="knowledgeUploadSource" placeholder="来源说明（可选）" />
+                </label>
+              </div>
+              <div class="knowledge-upload-actions">
+                <input id="knowledgeFileInput" type="file" accept=".txt,.md,.markdown,.pdf,.doc,.docx" />
+                <button id="uploadKnowledgeBtn" class="primary">解析并入库</button>
+              </div>
+            </div>
           </div>
           <div id="knowledgeBox" class="admin-panel">点击上方按钮加载知识库数据...</div>
         </section>

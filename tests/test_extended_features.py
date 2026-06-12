@@ -735,3 +735,282 @@ def test_workflow_persistence_roundtrip_loads_into_orchestrator():
     orchestrator.load_workflow_from_db(db)
 
     assert '"treatment" -> "end"' in orchestrator.get_workflow_graph()
+
+
+def _admin_user():
+    return CurrentUser(id=1, external_id="admin-demo", role="admin", display_name="管理员")
+
+
+def test_admin_delete_records_cascades_consultation_children():
+    db = _sqlite_session()
+    user = User(external_id="patient-demo", role="patient", display_name="患者 Demo")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    consultation = Consultation(
+        user_id=user.id,
+        patient_external_id="patient-demo",
+        agent_type="medication",
+        input_text="x",
+        sanitized_input="x",
+        summary="s",
+        risk_level="high",
+        sources_json="[]",
+        result_json="{}",
+    )
+    db.add(consultation)
+    db.commit()
+    db.refresh(consultation)
+    db.add_all([
+        DoctorReview(consultation_id=consultation.id),
+        AgentRun(consultation_id=consultation.id, agent_type="medication", agent_name="用药", risk_level="high"),
+        RetrievalHit(consultation_id=consultation.id, document_uid="d1", title="t", category="health", source="s", excerpt="e"),
+        LLMCallLog(consultation_id=consultation.id, model_name="deepseek", status="success", request_preview="p"),
+        FollowUpReminder(consultation_id=consultation.id, user_external_id="patient-demo", reminder_type="review", note="n"),
+    ])
+    db.commit()
+
+    result = routes.admin_delete_records(
+        resource="consultation",
+        payload={"ids": [consultation.id]},
+        db=db,
+        user=_admin_user(),
+    )
+
+    assert result["deleted"] == 1
+    assert db.query(Consultation).count() == 0
+    # No orphaned child rows remain.
+    assert db.query(DoctorReview).count() == 0
+    assert db.query(AgentRun).count() == 0
+    assert db.query(RetrievalHit).count() == 0
+    assert db.query(LLMCallLog).count() == 0
+    assert db.query(FollowUpReminder).count() == 0
+    # A delete audit trail was written.
+    audit = db.query(AuditLog).filter(AuditLog.action == "consultation.delete").first()
+    assert audit is not None and audit.risk_level == "high"
+
+
+def test_admin_delete_records_rejects_unknown_resource():
+    import pytest
+    from fastapi import HTTPException
+
+    db = _sqlite_session()
+    with pytest.raises(HTTPException) as exc:
+        routes.admin_delete_records(
+            resource="users",
+            payload={"ids": [1]},
+            db=db,
+            user=_admin_user(),
+        )
+    assert exc.value.status_code == 404
+
+
+def test_admin_delete_records_reports_skipped_missing_ids():
+    db = _sqlite_session()
+    log = AuditLog(
+        actor_external_id="admin-demo",
+        actor_role="admin",
+        action="system.login",
+        resource_type="user_account",
+        resource_id="1",
+        risk_level="low",
+        detail_json="{}",
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    result = routes.admin_delete_records(
+        resource="audit",
+        payload={"ids": [log.id, 99999]},
+        db=db,
+        user=_admin_user(),
+    )
+
+    assert result["deleted"] == 1
+    assert result["skipped"] == [99999]
+    # The original log is gone, but the delete itself leaves an audit.delete trail.
+    assert db.query(AuditLog).filter(AuditLog.action == "audit.delete").count() == 1
+
+
+def test_admin_dismiss_alert_hides_it_from_payload(monkeypatch):
+    import app.api._shared as _shared
+
+    class _Recall:
+        def evaluate_recall(self):
+            return {"hit_rate": 1.0, "mrr": 1.0, "case_count": 0}
+
+    monkeypatch.setattr(_shared, "store", _Recall())
+
+    db = _sqlite_session()
+    user = User(external_id="patient-demo", role="patient", display_name="患者 Demo")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    consultation = Consultation(
+        user_id=user.id,
+        patient_external_id="patient-demo",
+        agent_type="medication",
+        input_text="x",
+        sanitized_input="x",
+        summary="s",
+        risk_level="high",
+        sources_json="[]",
+        result_json="{}",
+        doctor_review_required=True,
+        status="review_pending",
+    )
+    db.add(consultation)
+    db.commit()
+    db.refresh(consultation)
+
+    before = routes.admin_alerts(db=db, user=_admin_user())
+    target = next(a for a in before["alerts"] if a["type"] == "high_risk_consultation")
+    assert before["counts"]["total"] >= 1
+
+    result = routes.admin_dismiss_alerts(
+        payload={"keys": [target["key"]]},
+        db=db,
+        user=_admin_user(),
+    )
+    assert result["dismissed"] == 1
+
+    after = routes.admin_alerts(db=db, user=_admin_user())
+    assert all(a["key"] != target["key"] for a in after["alerts"])
+    assert after["counts"]["total"] == before["counts"]["total"] - 1
+    # Re-dismissing the same key is a no-op.
+    again = routes.admin_dismiss_alerts(payload={"keys": [target["key"]]}, db=db, user=_admin_user())
+    assert again["dismissed"] == 0
+    assert again["skipped"] == [target["key"]]
+
+
+# ===== Knowledge document upload / extraction =====
+def _make_docx_bytes(text: str) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        )
+        z.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+        )
+        body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in text.split("\n"))
+        z.writestr(
+            "word/document.xml",
+            '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:body>{body}</w:body></w:document>",
+        )
+    return buf.getvalue()
+
+
+def test_extract_text_handles_txt_md_and_docx():
+    from app.services.document_extract import extract_text
+
+    assert extract_text("a.txt", "第一段。\n\n第二段。".encode("utf-8")) == "第一段。\n\n第二段。"
+    assert "标题" in extract_text("a.md", "# 标题\n\n正文".encode("utf-8"))
+    docx = _make_docx_bytes("文档第一行\n文档第二行")
+    assert "文档第一行" in extract_text("note.docx", docx)
+
+
+def test_extract_text_rejects_unknown_and_empty():
+    import pytest
+
+    from app.services.document_extract import DocumentExtractionError, extract_text
+
+    with pytest.raises(DocumentExtractionError):
+        extract_text("a.exe", b"x")
+    with pytest.raises(DocumentExtractionError):
+        extract_text("a.txt", b"")
+
+
+def test_chunk_text_splits_long_text_and_merges_tail():
+    from app.services.document_extract import chunk_text
+
+    short = "只有一段"
+    assert chunk_text(short) == [short]
+
+    paragraphs = "\n\n".join(f"段落{i} " + "字" * 300 for i in range(6))
+    chunks = chunk_text(paragraphs, target_chars=1200)
+    assert len(chunks) >= 2
+    assert all(len(c) <= 1200 for c in chunks)
+
+
+def _multipart_request(fields: dict, files: dict):
+    """Build a minimal Starlette Request carrying a multipart/form-data body."""
+    import asyncio
+
+    from starlette.requests import Request
+
+    boundary = "----testboundary1234"
+    parts = []
+    for name, value in fields.items():
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+        )
+    for name, (filename, content) in files.items():
+        header = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
+            f"filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        parts.append(header + content + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [
+            (b"content-type", f"multipart/form-data; boundary={boundary}".encode("utf-8")),
+            (b"content-length", str(len(body)).encode("utf-8")),
+        ],
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def test_admin_upload_knowledge_document_chunks_and_persists():
+    import asyncio
+
+    db = _sqlite_session()
+    long_text = "\n\n".join(f"第{i}段正文 " + "内容" * 400 for i in range(4))
+    req = _multipart_request(
+        fields={"category": "health", "source": "测试来源"},
+        files={"file": ("guide.txt", long_text.encode("utf-8"))},
+    )
+
+    result = asyncio.run(routes.admin_upload_knowledge_document(request=req, db=db, user=_admin_user()))
+
+    assert result["ok"] is True
+    assert result["chunks"] >= 2
+    assert result["filename"] == "guide.txt"
+    created_ids = [doc["id"] for doc in result["documents"]]
+    assert len(created_ids) == result["chunks"]
+    rows = db.query(KnowledgeDocument).filter(KnowledgeDocument.id.in_(created_ids)).all()
+    assert len(rows) == result["chunks"]
+    assert all(d.doc_uid.startswith("admin-") for d in rows)
+    assert all(d.category == "health" for d in rows)
+    # An audit trail records the upload.
+    assert db.query(AuditLog).filter(AuditLog.action == "knowledge.upload").count() == 1
+
+
+def test_admin_upload_knowledge_document_rejects_bad_extension():
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+
+    db = _sqlite_session()
+    req = _multipart_request(fields={}, files={"file": ("malware.exe", b"MZ...")})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(routes.admin_upload_knowledge_document(request=req, db=db, user=_admin_user()))
+    assert exc.value.status_code == 400

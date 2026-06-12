@@ -763,6 +763,49 @@
   gap: 10px;
 }
 
+/* ===== Delete confirmation dialog ===== */
+.confirm-delete-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.confirm-delete-icon {
+  font-size: 22px;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.confirm-delete-text {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.confirm-delete-body.high-risk .confirm-delete-text {
+  color: var(--danger);
+}
+
+.confirm-danger-guard {
+  margin-top: 16px;
+}
+
+.confirm-danger-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.confirm-danger-input {
+  border-color: var(--danger);
+}
+
+.confirm-danger-input:focus {
+  outline: none;
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
 @media (max-width: 600px) {
   .result-metrics {
     grid-template-columns: 1fr;

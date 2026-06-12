@@ -13,7 +13,17 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 import app.api._shared as _shared
-from app.models.entities import Consultation, DataAccessRequest, DoctorReview, LLMCallLog
+from app.models.entities import AlertDismissal, Consultation, DataAccessRequest, DoctorReview, LLMCallLog
+
+
+def alert_key(alert: dict[str, Any]) -> str:
+    """Stable identity for a computed alert: type:resource_type:resource_id.
+
+    Two alerts with the same key refer to the same underlying issue, so a
+    dismissal recorded under that key suppresses the alert until the issue
+    recurs with a different resource (or the key changes).
+    """
+    return f"{alert.get('type')}:{alert.get('resource_type') or '-'}:{alert.get('resource_id') if alert.get('resource_id') is not None else '-'}"
 
 
 def _admin_alerts_payload(db: Session) -> dict[str, Any]:
@@ -140,14 +150,21 @@ def _admin_alerts_payload(db: Session) -> dict[str, Any]:
 
     severity_rank = {"high": 0, "medium": 1, "low": 2}
     alerts.sort(key=lambda item: (severity_rank.get(str(item["severity"]), 9), str(item["created_at"])), reverse=False)
+
+    # Attach a stable key and drop alerts an admin has already dismissed.
+    dismissed_keys = {row.alert_key for row in db.query(AlertDismissal.alert_key).all()}
+    for item in alerts:
+        item["key"] = alert_key(item)
+    visible = [item for item in alerts if item["key"] not in dismissed_keys]
+
     return {
         "generated_at": now.isoformat(),
         "counts": {
-            "total": len(alerts),
-            "high": sum(1 for item in alerts if item["severity"] == "high"),
-            "medium": sum(1 for item in alerts if item["severity"] == "medium"),
-            "low": sum(1 for item in alerts if item["severity"] == "low"),
+            "total": len(visible),
+            "high": sum(1 for item in visible if item["severity"] == "high"),
+            "medium": sum(1 for item in visible if item["severity"] == "medium"),
+            "low": sum(1 for item in visible if item["severity"] == "low"),
         },
         "rag_evaluation": retrieval_evaluation,
-        "alerts": alerts[:50],
+        "alerts": visible[:50],
     }

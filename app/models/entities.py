@@ -478,6 +478,28 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class AlertDismissal(Base):
+    """Records an admin "dismiss/acknowledge" of a computed alert.
+
+    Alerts are derived on the fly from underlying data (overdue reviews, failed
+    LLM calls, etc.) and have no row of their own. To let admins clear handled
+    alerts without touching that data, each dismissal is keyed by a stable
+    alert_key ("type:resource_type:resource_id") and filtered out when the alert
+    payload is rebuilt.
+    """
+
+    __tablename__ = "alert_dismissals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    alert_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    alert_type: Mapped[str] = mapped_column(String(60), index=True)
+    resource_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    dismissed_by: Mapped[str] = mapped_column(String(80), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class WorkflowConfig(Base):
     __tablename__ = "workflow_configs"
 

@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.models.entities import (
     AgentRun,
+    AlertDismissal,
     AuditLog,
     Consultation,
     DataAccessRequest,
@@ -143,6 +144,7 @@ from app.api.serializers import (
 # Relocated to app.services.alerts (phase-4). Re-exported for call sites/tests.
 from app.services.alerts import (
     _admin_alerts_payload,
+    alert_key,
 )
 
 # Relocated to app.services.notifications (phase-4). Re-exported for call sites/tests.
@@ -1233,7 +1235,100 @@ def admin_create_knowledge_document(
     return {"ok": True, "document": _knowledge_document_payload(row), "runtime_sync": sync_result}
 
 
-@router.put("/admin/knowledge/documents/{document_id}")
+@router.post("/admin/knowledge/upload")
+async def admin_upload_knowledge_document(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Ingest a knowledge document from an uploaded file (txt/md/pdf/doc/docx).
+
+    The file is parsed to plain text, chunked, and each chunk stored as its own
+    KnowledgeDocument so retrieval stays granular. Title/category/source default
+    sensibly from the filename when not supplied.
+    """
+    require_role(user, {"admin"})
+    from app.services.document_extract import (
+        ALLOWED_EXTENSIONS,
+        MAX_UPLOAD_BYTES,
+        DocumentExtractionError,
+        chunk_text,
+        extract_text,
+    )
+
+    try:
+        form = await request.form()
+    except (AssertionError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail="文件上传需要安装 python-multipart。") from exc
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", ""):
+        raise HTTPException(status_code=400, detail="请选择要上传的文件。")
+
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式：{suffix or '未知'}。支持 txt、md、pdf、doc、docx。")
+
+    data = await upload.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"文件过大，上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB。")
+
+    try:
+        text = extract_text(upload.filename, data)
+    except DocumentExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    stem = Path(upload.filename).stem
+    base_title = str(form.get("title") or "").strip() or stem
+    category = str(form.get("category") or "").strip() or "general"
+    source = str(form.get("source") or "").strip() or f"上传文件：{upload.filename}"
+
+    chunks = chunk_text(text)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="未能从文件中解析出文本内容。")
+
+    metrics = _shared.store.quality_metrics()
+    _upsert_knowledge_version(db, metrics)
+    version = db.query(KnowledgeVersion).filter(KnowledgeVersion.version == str(metrics["version"])).first()
+
+    multi = len(chunks) > 1
+    created: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks, start=1):
+        title = f"{base_title}（{index}/{len(chunks)}）" if multi else base_title
+        row = KnowledgeDocument(
+            knowledge_version_id=version.id if version else None,
+            doc_uid=f"admin-{uuid4().hex[:12]}",
+            title=title,
+            category=category,
+            source=source,
+            tags_json=json.dumps(["upload", suffix.lstrip(".")], ensure_ascii=False),
+            content=chunk,
+            active=True,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        _log_knowledge_change(db, user, row, "create", None, _knowledge_document_payload(row), f"管理员上传文件入库：{upload.filename}")
+        created.append(_knowledge_document_payload(row))
+
+    sync_result = _sync_runtime_knowledge_from_db(db)
+    write_audit_log(
+        db,
+        actor_external_id=user.external_id,
+        actor_role=user.role,
+        action="knowledge.upload",
+        resource_type="knowledge_document",
+        resource_id=",".join(str(doc["id"]) for doc in created) if len(created) <= 20 else f"{len(created)} 条",
+        risk_level="low",
+        detail={"filename": upload.filename, "format": suffix, "chunks": len(created), "chars": len(text)},
+    )
+    return {
+        "ok": True,
+        "filename": upload.filename,
+        "chunks": len(created),
+        "documents": created,
+        "runtime_sync": sync_result,
+    }
 def admin_update_knowledge_document(
     document_id: int,
     payload: KnowledgeDocumentInput,
@@ -1553,6 +1648,68 @@ def admin_alerts(
     return _admin_alerts_payload(db)
 
 
+@router.post("/admin/alerts/dismiss")
+def admin_dismiss_alerts(
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Dismiss (acknowledge) one or more computed alerts by their stable key.
+
+    Alerts have no stored row, so "delete" means recording a dismissal keyed by
+    type:resource_type:resource_id. Re-dismissing an already-dismissed key is a
+    no-op (counted in `skipped`). The dismissal is reversible by removing the
+    alert_dismissals row; the underlying data is never touched.
+    """
+    require_role(user, {"admin"})
+    keys = payload.get("keys", [])
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="请提供要忽略的告警 keys")
+    keys = [str(k) for k in keys]
+
+    existing = {
+        row.alert_key
+        for row in db.query(AlertDismissal.alert_key).filter(AlertDismissal.alert_key.in_(keys)).all()
+    }
+    dismissed: list[str] = []
+    skipped: list[str] = []
+    for key in keys:
+        if key in existing:
+            skipped.append(key)
+            continue
+        parts = key.split(":", 2)
+        alert_type = parts[0] if parts else key
+        resource_type = parts[1] if len(parts) > 1 and parts[1] != "-" else None
+        resource_id = parts[2] if len(parts) > 2 and parts[2] != "-" else None
+        db.add(
+            AlertDismissal(
+                alert_key=key,
+                alert_type=alert_type,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                dismissed_by=user.external_id,
+                note=payload.get("note"),
+            )
+        )
+        dismissed.append(key)
+
+    db.commit()
+
+    if dismissed:
+        write_audit_log(
+            db,
+            actor_external_id=user.external_id,
+            actor_role=user.role,
+            action="alert.dismiss",
+            resource_type="admin_alert",
+            resource_id=",".join(dismissed) if len(dismissed) <= 10 else f"{len(dismissed)} 条",
+            risk_level="low",
+            detail={"dismissed_keys": dismissed, "count": len(dismissed), "skipped": skipped},
+        )
+
+    return {"ok": True, "dismissed": len(dismissed), "skipped": skipped}
+
+
 @router.get("/admin/llm/metrics")
 def llm_metrics(
     db: Session = Depends(get_db),
@@ -1764,6 +1921,168 @@ def process_data_request(
         "status": request.status,
         "request": _data_access_request_payload(request, include_result=True),
     }
+
+
+def _delete_consultation_cascade(db: Session, consultation_id: int) -> bool:
+    """Physically delete a consultation and every child row that references it.
+
+    Consultation has no DB-level cascade, so each child table is cleared by
+    consultation_id before the parent row is removed to avoid orphaned FK rows.
+    Returns False if the consultation does not exist.
+    """
+    row = db.query(Consultation).filter(Consultation.id == consultation_id).first()
+    if row is None:
+        return False
+    for model in (
+        DoctorReview,
+        TriageReport,
+        MedicationCheck,
+        TreatmentComparison,
+        AgentRun,
+        RetrievalHit,
+        UploadedFile,
+        HealthPlan,
+        FollowUpReminder,
+        LLMCallLog,
+        TreatmentRecord,
+    ):
+        db.query(model).filter(model.consultation_id == consultation_id).delete(synchronize_session=False)
+    db.delete(row)
+    return True
+
+
+def _delete_knowledge_document(db: Session, document_id: int) -> bool:
+    """Physically delete a knowledge document, detaching its retrieval hits first."""
+    row = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+    if row is None:
+        return False
+    db.query(RetrievalHit).filter(RetrievalHit.knowledge_document_id == document_id).update(
+        {RetrievalHit.knowledge_document_id: None}, synchronize_session=False
+    )
+    db.query(KnowledgeChangeLog).filter(
+        KnowledgeChangeLog.knowledge_document_id == document_id
+    ).update({KnowledgeChangeLog.knowledge_document_id: None}, synchronize_session=False)
+    db.delete(row)
+    return True
+
+
+# Whitelist of deletable admin record types. Each entry maps a frontend resource
+# key to its model, the audit action/risk to record, and an optional custom
+# delete function (for cascades). Resources not listed here cannot be deleted.
+_DELETABLE_RECORDS: dict[str, dict[str, Any]] = {
+    "knowledge": {
+        "model": KnowledgeDocument,
+        "action": "knowledge.delete",
+        "resource_type": "knowledge_document",
+        "risk_level": "medium",
+        "delete_fn": _delete_knowledge_document,
+        "sync_knowledge": True,
+    },
+    "consultation": {
+        "model": Consultation,
+        "action": "consultation.delete",
+        "resource_type": "consultation",
+        "risk_level": "high",
+        "delete_fn": _delete_consultation_cascade,
+    },
+    "llm": {
+        "model": LLMCallLog,
+        "action": "llm.delete",
+        "resource_type": "llm_call_log",
+        "risk_level": "low",
+    },
+    "audit": {
+        "model": AuditLog,
+        "action": "audit.delete",
+        "resource_type": "audit_log",
+        "risk_level": "high",
+    },
+    "data-request": {
+        "model": DataAccessRequest,
+        "action": "data_request.delete",
+        "resource_type": "data_access_request",
+        "risk_level": "medium",
+    },
+    "privacy-assessment": {
+        "model": PrivacyImpactAssessment,
+        "action": "privacy_assessment.delete",
+        "resource_type": "privacy_impact_assessment",
+        "risk_level": "medium",
+    },
+    "retention-policy": {
+        "model": DataRetentionPolicy,
+        "action": "retention_policy.delete",
+        "resource_type": "data_retention_policy",
+        "risk_level": "medium",
+    },
+}
+
+
+@router.post("/admin/records/{resource}/delete")
+def admin_delete_records(
+    resource: str,
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Unified delete dispatcher for admin record sections (single or bulk).
+
+    Body: {"ids": [int, ...]}. Each id is deleted independently; missing ids are
+    reported in `skipped` rather than failing the whole batch. One audit log row
+    is written per call recording the deleted ids.
+    """
+    require_role(user, {"admin"})
+    spec = _DELETABLE_RECORDS.get(resource)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"不支持删除的资源类型：{resource}")
+
+    raw_ids = payload.get("ids", [])
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="请提供要删除的记录 ids")
+    try:
+        ids = [int(i) for i in raw_ids]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ids 必须为整数列表")
+
+    model = spec["model"]
+    delete_fn = spec.get("delete_fn")
+    deleted_ids: list[int] = []
+    skipped: list[int] = []
+
+    for record_id in ids:
+        if delete_fn is not None:
+            ok = delete_fn(db, record_id)
+        else:
+            row = db.query(model).filter(model.id == record_id).first()
+            if row is None:
+                ok = False
+            else:
+                db.delete(row)
+                ok = True
+        if ok:
+            deleted_ids.append(record_id)
+        else:
+            skipped.append(record_id)
+
+    db.commit()
+
+    sync_result = None
+    if spec.get("sync_knowledge") and deleted_ids:
+        sync_result = _sync_runtime_knowledge_from_db(db)
+
+    if deleted_ids:
+        write_audit_log(
+            db,
+            actor_external_id=user.external_id,
+            actor_role=user.role,
+            action=spec["action"],
+            resource_type=spec["resource_type"],
+            resource_id=",".join(str(i) for i in deleted_ids) if len(deleted_ids) <= 20 else f"{len(deleted_ids)} 条",
+            risk_level=spec["risk_level"],
+            detail={"deleted_ids": deleted_ids, "count": len(deleted_ids), "skipped": skipped},
+        )
+
+    return {"ok": True, "deleted": len(deleted_ids), "skipped": skipped, "runtime_sync": sync_result}
 
 
 @router.get("/admin/privacy/assessments")
