@@ -7,7 +7,7 @@
 | 要求 | 当前实现证据 | 验证方式 |
 | --- | --- | --- |
 | FastAPI 后端 | `app/main.py`、`app/api/routes.py` | `python -m compileall app tests scripts` |
-| MySQL 业务库 | `sql/init_oralcare_agentic_rag.sql`，29 张表 | `python scripts/init_mysql.py`、`python scripts/verify_database.py` |
+| MySQL 业务库 | `sql/init_oralcare_agentic_rag.sql`，33 张表 | `python scripts/init_mysql.py`、`python scripts/verify_database.py` |
 | Chroma 向量库 | `app/rag/chroma_index.py`、`data/chroma` | `python scripts/rebuild_chroma.py` |
 | LangChain Agentic RAG | `app/agents/agentic_flow.py` 使用 `RunnableLambda` / `RunnableSequence` | `tests/test_orchestrator.py` |
 | DeepSeek 接入与监控 | `app/services/llm.py`、`llm_call_logs`、`/api/admin/llm/metrics`，主 Agent 与 workflow 子 Agent 均写入调用日志 | `tests/test_extended_features.py`、管理员前端 “LLM 指标/咨询追踪” |
@@ -85,6 +85,6 @@
 - `node --check app/static/app.js`：通过
 - `pytest -q`：30 passed
 - `python scripts/init_mysql.py`：通过
-- `python scripts/verify_database.py`：29 张表，workflow 1 套、9 节点、19 边，隐私保留策略 5 条、隐私影响评估 1 条
+- `python scripts/verify_database.py`：33 张表，workflow 1 套、9 节点、19 边，隐私保留策略 5 条、隐私影响评估 1 条
 - `python scripts/rebuild_chroma.py`：Chroma 后端 `chroma-persistent`，知识库 54 条，召回评测 56 用例命中率 1.0、MRR 0.988
 - HTTP 烟测：5 条验收演示链路均生成咨询归档、RAG 来源、执行轨迹和医生复核标记；管理员咨询追踪返回 workflow 子 Agent `llm_calls`

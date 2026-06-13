@@ -43,7 +43,7 @@ python -m pip list
 mysql+pymysql://root:123456@127.0.0.1:3306/oralcare_agentic_rag?charset=utf8mb4
 ```
 
-数据库设计说明见 `docs/database_design.md`。当前设计包含 29 张表，覆盖用户档案、咨询主流程、RAG 命中、Agent 轨迹、DeepSeek 调用日志、医生复核、影像上传、健康计划、复诊提醒、站内通知、牙位档案、知识库变更记录、动态 workflow 配置、隐私合规记录和审计日志。
+数据库设计说明见 `docs/database_design.md`。当前设计包含 33 张表，覆盖用户档案、咨询主流程、RAG 命中、Agent 轨迹、DeepSeek 调用日志、医生复核、影像上传、健康计划、复诊提醒、站内通知、牙位档案、知识库变更记录、临床规则库、评测体系、动态 workflow 配置、隐私合规记录和审计日志。
 
 如果需要重新初始化数据库，可在已安装 MySQL 且账号密码可用时执行：
 
